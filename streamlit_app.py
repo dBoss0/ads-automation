@@ -4,6 +4,7 @@ Run:  streamlit run streamlit_app.py
 """
 
 import base64
+import re
 import tempfile
 from pathlib import Path
 
@@ -49,6 +50,64 @@ JNJ_BLUE_03 = "#0f68b2"
 JNJ_BLUE_05 = "#004685"
 JNJ_GREEN_03 = "#328714"
 JNJ_ORANGE  = "#ff6017"
+
+# ── CodeLists constants ────────────────────────────────────────────────────────
+CODING_SYSTEMS = [
+    "ICD-9 CM", "ICD-9 PCS",
+    "ICD-10 CM", "ICD-10 PCS",
+    "CPT-4", "CPT-5",
+    "HCPCS", "DRG", "NDC",
+]
+
+# (border_color, background_color)
+CODING_SYSTEM_STYLE = {
+    "ICD-9 CM":   ("#7c3aed", "rgba(124,58,237,0.07)"),
+    "ICD-9 PCS":  ("#6d28d9", "rgba(109,40,217,0.07)"),
+    "ICD-10 CM":  ("#0f68b2", "rgba(15,104,178,0.08)"),
+    "ICD-10 PCS": ("#1d4ed8", "rgba(29,78,216,0.08)"),
+    "CPT-4":      ("#328714", "rgba(50,135,20,0.07)"),
+    "CPT-5":      ("#15803d", "rgba(21,128,61,0.07)"),
+    "HCPCS":      ("#0891b2", "rgba(8,145,178,0.07)"),
+    "DRG":        ("#ea580c", "rgba(234,88,12,0.07)"),
+    "NDC":        ("#eb1700", "rgba(235,23,0,0.07)"),
+}
+
+
+def make_temp_table_name(condition: str, coding_system: str) -> str:
+    cond = re.sub(r"[^a-z0-9]+", "_", condition.lower()).strip("_")
+    sys_ = re.sub(r"[^a-z0-9]+", "_", coding_system.lower()).strip("_")
+    return f"tmp__{cond}__{sys_}"
+
+
+def parse_codes_input(raw: str) -> list:
+    parts = re.split(r"[\n,;\t]+", raw)
+    return [p.strip().upper() for p in parts if p.strip()]
+
+
+def guess_coding_system(sheet_name: str, sample_codes: list) -> str | None:
+    n = sheet_name.lower()
+    if "icd-10" in n or "icd10" in n:
+        return "ICD-10 PCS" if "pcs" in n else "ICD-10 CM"
+    if "icd-9" in n or "icd9" in n:
+        return "ICD-9 PCS" if "pcs" in n else "ICD-9 CM"
+    if "cpt" in n:
+        return "CPT-4"
+    if "hcpcs" in n:
+        return "HCPCS"
+    if "drg" in n:
+        return "DRG"
+    if "ndc" in n:
+        return "NDC"
+    # Pattern detection from sample codes
+    icd10_re = re.compile(r"^[A-Z]\d{2}", re.IGNORECASE)
+    ndc_re   = re.compile(r"^\d{10,11}$")
+    if sample_codes:
+        n_codes = max(len(sample_codes), 1)
+        if sum(1 for c in sample_codes if icd10_re.match(str(c))) / n_codes > 0.6:
+            return "ICD-10 CM"
+        if sum(1 for c in sample_codes if ndc_re.match(str(c))) / n_codes > 0.6:
+            return "NDC"
+    return None
 
 
 st.markdown(f"""
@@ -744,6 +803,62 @@ html, body, [class*="css"] {{
 .stTabs [data-baseweb="tab-highlight"] {{ display: none; }}
 .stTabs [data-baseweb="tab-border"]    {{ display: none; }}
 
+/* ════════════════════════════════════════════════════
+   CODE LISTS  (Step 4)
+════════════════════════════════════════════════════ */
+.cl-condition-card {{
+    background: #ffffff;
+    border: 1px solid {JNJ_GRAY_02};
+    border-radius: 10px;
+    padding: clamp(1rem, 2.5vw, 1.5rem);
+    margin-bottom: 0.75rem;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+}}
+.cl-condition-header {{
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-bottom: 0.85rem;
+}}
+.cl-condition-name {{
+    font-size: clamp(0.95rem, 1.8vw, 1.1rem);
+    font-weight: 700;
+    color: {JNJ_GRAY_08};
+    letter-spacing: -0.01em;
+}}
+.cl-condition-total {{
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: {JNJ_GRAY_05};
+    font-family: 'Roboto Mono', monospace;
+}}
+.cl-badges-row {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}}
+.cl-sys-badge {{
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1.5px solid;
+    border-radius: 6px;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: default;
+}}
+.cl-sys-name  {{ font-weight: 700; letter-spacing: 0.04em; }}
+.cl-sys-count {{ opacity: 0.75; font-weight: 500; }}
+.cl-sys-tmp   {{
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.62rem;
+    opacity: 0.65;
+    border-left: 1px solid currentColor;
+    padding-left: 0.4rem;
+    margin-left: 0.1rem;
+}}
+
 /* ── scrollbar ── */
 ::-webkit-scrollbar {{ width: 5px; height: 5px; }}
 ::-webkit-scrollbar-track {{ background: {JNJ_GRAY_01}; }}
@@ -760,11 +875,12 @@ html, body, [class*="css"] {{
 # session state
 # ─────────────────────────────────────────────────────────────────────────────
 for key, default in [
-    ("steps_df",      None),
-    ("title",         ""),
-    ("data_sources",  []),
-    ("notebook_path", None),
-    ("input_mode",    None),
+    ("steps_df",       None),
+    ("title",          ""),
+    ("data_sources",   []),
+    ("notebook_path",  None),
+    ("input_mode",     None),
+    ("codelists_df",   None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -970,6 +1086,38 @@ with tab_manual:
 
 
 # ── STEP 2: EDIT ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="jnj-section-header" style="margin-top:2.5rem;">
+    <div class="jnj-step-num">2</div>
+    <div class="jnj-section-title">Edit Attrition Steps
+        <span>Add, remove, or modify any step — changes flow directly into the notebook</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+if st.session_state.steps_df is None:
+    st.markdown(f"""
+    <div style="background:#ffffff;border:1px dashed {JNJ_GRAY_03};border-radius:8px;
+                padding:1.5rem 2rem;color:{JNJ_GRAY_05};font-size:0.875rem;text-align:center;">
+        Upload a protocol or enter steps manually in Step 1 to begin editing.
+    </div>
+    """, unsafe_allow_html=True)
+
+# Step 3 placeholder — always visible
+if st.session_state.steps_df is None:
+    st.markdown(f"""
+    <div class="jnj-section-header" style="margin-top:2.5rem;">
+        <div class="jnj-step-num">3</div>
+        <div class="jnj-section-title">Generate Notebook
+            <span>Exports your curated steps as a structured .ipynb file</span>
+        </div>
+    </div>
+    <div style="background:#ffffff;border:1px dashed {JNJ_GRAY_03};border-radius:8px;
+                padding:1.5rem 2rem;color:{JNJ_GRAY_05};font-size:0.875rem;text-align:center;">
+        Complete Steps 1 and 2 to generate a notebook.
+    </div>
+    """, unsafe_allow_html=True)
+
 if st.session_state.steps_df is not None:
 
     st.markdown("""
@@ -1049,8 +1197,8 @@ if st.session_state.steps_df is not None:
     """, unsafe_allow_html=True)
 
     # ── STEP 3: GENERATE ──────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="jnj-section-header">
+    st.markdown(f"""
+    <div class="jnj-section-header" style="margin-top:2.5rem;">
         <div class="jnj-step-num">3</div>
         <div class="jnj-section-title">Generate Notebook
             <span>Exports your curated steps as a structured .ipynb file</span>
@@ -1130,6 +1278,254 @@ if st.session_state.steps_df is not None:
                 st.markdown(f'<div class="jnj-error">Generation failed: {e}</div>',
                             unsafe_allow_html=True)
 
+
+# ── STEP 4: CODE LISTS ───────────────────────────────────────────────────────
+st.markdown("""
+<div class="jnj-section-header" style="margin-top:2.5rem;">
+    <div class="jnj-step-num">4</div>
+    <div class="jnj-section-title">Code Lists
+        <span>Define ICD-9/10, CPT, HCPCS, DRG and NDC codes grouped by condition — feeds SQL generation</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+cl_tab_manual, cl_tab_excel = st.tabs(["  Manual Entry  ", "  Upload Excel  "])
+
+# ── MANUAL ENTRY ──────────────────────────────────────────────────────────────
+with cl_tab_manual:
+    st.markdown("""
+    <div class="jnj-hints">
+        <span class="jnj-hint">One code group = one condition + one coding system</span>
+        <span class="jnj-hint">Paste codes — comma, newline, or semicolon separated</span>
+        <span class="jnj-hint">Add as many groups as needed</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("cl_add_form", clear_on_submit=True):
+        col_cond, col_sys = st.columns([2, 2])
+        with col_cond:
+            f_condition = st.text_input(
+                "Condition / Concept Name",
+                placeholder="e.g. Malnutrition, NSCLC, Chemotherapy",
+            )
+        with col_sys:
+            f_coding_sys = st.selectbox("Coding System", CODING_SYSTEMS)
+        f_codes_raw = st.text_area(
+            "Codes",
+            placeholder="Paste codes here — one per line or comma separated\nE40\nE41\nE42\nE43\nE44.0",
+            height=140,
+        )
+        cl_submitted = st.form_submit_button("+ Add Code Group", type="primary")
+
+    if cl_submitted:
+        if not f_condition.strip():
+            st.warning("Enter a condition name.")
+        elif not f_codes_raw.strip():
+            st.warning("Enter at least one code.")
+        else:
+            new_codes = parse_codes_input(f_codes_raw)
+            new_rows = pd.DataFrame({
+                "condition":     f_condition.strip(),
+                "coding_system": f_coding_sys,
+                "code":          new_codes,
+                "description":   "",
+            })
+            if st.session_state.codelists_df is None:
+                st.session_state.codelists_df = new_rows
+            else:
+                st.session_state.codelists_df = pd.concat(
+                    [st.session_state.codelists_df, new_rows], ignore_index=True
+                )
+            st.rerun()
+
+# ── EXCEL UPLOAD ──────────────────────────────────────────────────────────────
+with cl_tab_excel:
+    st.markdown("""
+    <div class="jnj-hints">
+        <span class="jnj-hint">Upload one or multiple Excel / CSV files — clients may send one per condition</span>
+        <span class="jnj-hint">Select a file, then a sheet — system suggests column mapping</span>
+        <span class="jnj-hint">You confirm every mapping — no assumptions on codes</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    cl_excel_files = st.file_uploader(
+        "", type=["xlsx", "xls", "csv"],
+        label_visibility="collapsed",
+        key="cl_excel_uploader",
+        accept_multiple_files=True,
+    )
+
+    if cl_excel_files:
+        file_names   = [f.name for f in cl_excel_files]
+        selected_fname = st.selectbox(
+            f"{len(cl_excel_files)} file(s) uploaded — select one to map",
+            file_names,
+            key="cl_file_select",
+        )
+        cl_excel_file = next(f for f in cl_excel_files if f.name == selected_fname)
+
+        try:
+            if cl_excel_file.name.lower().endswith(".csv"):
+                all_sheets = {"Sheet1": pd.read_csv(cl_excel_file, dtype=str)}
+            else:
+                xl = pd.ExcelFile(cl_excel_file)
+                all_sheets = {s: xl.parse(s, dtype=str) for s in xl.sheet_names}
+        except Exception as e:
+            st.markdown(f'<div class="jnj-error">Could not read file: {e}</div>', unsafe_allow_html=True)
+            all_sheets = {}
+
+        if all_sheets:
+            selected_sheet = st.selectbox(
+                f"Sheet to process ({len(all_sheets)} sheet(s) in this file)",
+                list(all_sheets.keys()),
+                key="cl_sheet_select",
+            )
+            df_sheet = all_sheets[selected_sheet].dropna(how="all")
+
+            st.markdown(f"""
+            <div style="font-size:0.68rem;font-weight:700;letter-spacing:0.12em;
+                        text-transform:uppercase;color:{JNJ_GRAY_05};margin:1rem 0 0.4rem;">
+                Preview — first 5 rows
+            </div>
+            """, unsafe_allow_html=True)
+            st.dataframe(df_sheet.head(5), use_container_width=True)
+
+            col_options  = ["— not in this sheet —"] + list(df_sheet.columns.astype(str))
+            sample_codes = df_sheet.iloc[:, 0].dropna().astype(str).tolist()[:20]
+            guessed_sys  = guess_coding_system(selected_sheet, sample_codes)
+            guessed_idx  = CODING_SYSTEMS.index(guessed_sys) if guessed_sys in CODING_SYSTEMS else 0
+
+            st.markdown(f"""
+            <div style="font-size:0.68rem;font-weight:700;letter-spacing:0.12em;
+                        text-transform:uppercase;color:{JNJ_GRAY_05};margin:1rem 0 0.4rem;">
+                Map columns
+            </div>
+            """, unsafe_allow_html=True)
+
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                map_code_col = st.selectbox("Code column *", col_options, key=f"map_code_{selected_sheet}")
+                map_desc_col = st.selectbox("Description column (optional)", col_options, key=f"map_desc_{selected_sheet}")
+            with mc2:
+                map_cond_col    = st.selectbox("Condition column (if in file)", col_options, key=f"map_cond_col_{selected_sheet}")
+                map_cond_manual = st.text_input("— or type condition name", placeholder="e.g. Malnutrition", key=f"map_cond_txt_{selected_sheet}")
+                map_sys_col     = st.selectbox("Coding system column (if in file)", col_options, key=f"map_sys_col_{selected_sheet}")
+                map_sys_manual  = st.selectbox(
+                    "— or select coding system",
+                    CODING_SYSTEMS,
+                    index=guessed_idx,
+                    key=f"map_sys_sel_{selected_sheet}",
+                )
+
+            if guessed_sys:
+                st.markdown(f"""
+                <div class="jnj-hint" style="color:{JNJ_BLUE_03};border-color:rgba(15,104,178,0.3);margin-bottom:0.75rem;">
+                    Auto-detected: <strong>{guessed_sys}</strong> from sheet name &quot;{selected_sheet}&quot;
+                </div>
+                """, unsafe_allow_html=True)
+
+            if st.button("Import This Sheet", type="primary", key=f"cl_import_{selected_sheet}"):
+                if map_code_col == "— not in this sheet —":
+                    st.warning("Select the column that contains the codes.")
+                else:
+                    cond_vals = (
+                        df_sheet[map_cond_col].fillna("Unknown").astype(str).str.strip()
+                        if map_cond_col != "— not in this sheet —"
+                        else pd.Series([map_cond_manual.strip() or "Unknown"] * len(df_sheet))
+                    )
+                    sys_vals = (
+                        df_sheet[map_sys_col].fillna("").astype(str).str.strip()
+                        if map_sys_col != "— not in this sheet —"
+                        else pd.Series([map_sys_manual] * len(df_sheet))
+                    )
+                    desc_vals = (
+                        df_sheet[map_desc_col].astype(str).str.strip()
+                        if map_desc_col != "— not in this sheet —"
+                        else pd.Series([""] * len(df_sheet))
+                    )
+                    raw_codes = df_sheet[map_code_col].dropna().astype(str).str.strip().str.upper()
+                    new_rows = pd.DataFrame({
+                        "condition":     cond_vals.values[:len(raw_codes)],
+                        "coding_system": sys_vals.values[:len(raw_codes)],
+                        "code":          raw_codes.values,
+                        "description":   desc_vals.values[:len(raw_codes)],
+                    })
+                    new_rows = new_rows[new_rows["code"].str.len() > 0].reset_index(drop=True)
+                    if st.session_state.codelists_df is None:
+                        st.session_state.codelists_df = new_rows
+                    else:
+                        st.session_state.codelists_df = pd.concat(
+                            [st.session_state.codelists_df, new_rows], ignore_index=True
+                        )
+                    st.success(f"{len(new_rows)} codes imported from '{selected_sheet}'.")
+                    st.rerun()
+
+# ── DISPLAY EXISTING CODE LISTS ───────────────────────────────────────────────
+if st.session_state.codelists_df is not None and not st.session_state.codelists_df.empty:
+    df_cl = st.session_state.codelists_df
+    conditions = df_cl["condition"].unique()
+
+    st.markdown(f"""
+    <div style="margin-top:1.75rem;margin-bottom:0.75rem;font-size:0.68rem;font-weight:800;
+                letter-spacing:0.15em;text-transform:uppercase;color:{JNJ_GRAY_05};">
+        {len(df_cl)} codes &nbsp;·&nbsp; {df_cl["condition"].nunique()} conditions
+        &nbsp;·&nbsp; {df_cl["coding_system"].nunique()} coding systems
+    </div>
+    """, unsafe_allow_html=True)
+
+    for cond in conditions:
+        cond_df = df_cl[df_cl["condition"] == cond]
+        systems  = cond_df["coding_system"].unique()
+
+        badges_html = ""
+        for sys in systems:
+            count   = len(cond_df[cond_df["coding_system"] == sys])
+            color, bg = CODING_SYSTEM_STYLE.get(sys, (JNJ_GRAY_05, JNJ_GRAY_01))
+            tmp     = make_temp_table_name(cond, sys)
+            badges_html += f"""
+            <div class="cl-sys-badge" style="border-color:{color};color:{color};background:{bg};">
+                <span class="cl-sys-name">{sys}</span>
+                <span class="cl-sys-count">&nbsp;{count} codes</span>
+                <span class="cl-sys-tmp">{tmp}</span>
+            </div>"""
+
+        st.markdown(f"""
+        <div class="cl-condition-card">
+            <div class="cl-condition-header">
+                <span class="cl-condition-name">{cond}</span>
+                <span class="cl-condition-total">{len(cond_df)} codes total</span>
+            </div>
+            <div class="cl-badges-row">{badges_html}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for sys in systems:
+            sys_codes = cond_df[cond_df["coding_system"] == sys]["code"].tolist()
+            color, _  = CODING_SYSTEM_STYLE.get(sys, (JNJ_GRAY_05, JNJ_GRAY_01))
+
+            with st.expander(f"{sys}  ·  {len(sys_codes)} codes", expanded=False):
+                display_codes = "   ·   ".join(sys_codes[:60])
+                if len(sys_codes) > 60:
+                    display_codes += f"   … +{len(sys_codes)-60} more"
+                st.markdown(f"""
+                <div style="font-family:'Roboto Mono',monospace;font-size:0.78rem;
+                            color:{JNJ_GRAY_08};line-height:1.9;padding:0.5rem 0;
+                            word-break:break-all;">
+                    {display_codes}
+                </div>
+                """, unsafe_allow_html=True)
+
+                del_col, _ = st.columns([1, 5])
+                with del_col:
+                    if st.button("Delete group", key=f"del_{cond}_{sys}".replace(" ","_"), type="secondary"):
+                        mask = ~((df_cl["condition"] == cond) & (df_cl["coding_system"] == sys))
+                        st.session_state.codelists_df = df_cl[mask].reset_index(drop=True)
+                        st.rerun()
+
+    st.markdown("<div style='margin-top:1rem;'></div>", unsafe_allow_html=True)
+    if st.button("Clear All Code Lists", key="cl_clear_all", type="secondary"):
+        st.session_state.codelists_df = None
+        st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)   # close jnj-content / jnj-inner
 
