@@ -311,15 +311,15 @@ def extract_data_source_section(text):
 
 def detect_data_source(text):
     section = extract_data_source_section(text)
-    section_lower = section.lower()
+    search_text = (section if section else text).lower()
 
     detected = []
     sorted_keys = sorted(DATA_SOURCE_MASTER.keys(), key=len, reverse=True)
 
     for key in sorted_keys:
         pattern = r"\b" + re.escape(key) + r"\b"
-        if re.search(pattern, section_lower):
+        if re.search(pattern, search_text):
             detected.append(DATA_SOURCE_MASTER[key])
-            section_lower = re.sub(pattern, "", section_lower)
+            search_text = re.sub(pattern, "", search_text)
 
     return list(set(detected))
