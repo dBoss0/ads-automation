@@ -182,9 +182,12 @@ def extract_study_selection(text):
     exc_match = re.search(r"exclusion criteria", text_lower[start_idx:])
     search_from = start_idx + exc_match.end() if exc_match else start_idx
 
+    # Match end keywords only when they appear as a section heading:
+    # at the start of a line, optionally preceded by a section number.
     end_idx = len(text)
     for kw in end_keywords:
-        match = re.search(kw, text_lower[search_from:])
+        pattern = r"(?:^|\n)\s*(?:\d+[\.\d]*\s+)?" + re.escape(kw)
+        match = re.search(pattern, text_lower[search_from:])
         if match:
             end_idx = search_from + match.start()
             break
@@ -248,6 +251,9 @@ def extract_steps(section_text):
         if " must meet all the following" in step_lower:
             continue
         if " meeting any of the following" in step_lower:
+            continue
+        # Skip bare section headings that leak through (e.g. "Variables", "Outcomes")
+        if re.match(r"^(\d+[\.\d]*\s+)?(?:variables?|outcomes?|endpoints?|covariates?|statistical analysis|data analysis)$", step_lower):
             continue
 
         # Strip leading bullets and numbering
