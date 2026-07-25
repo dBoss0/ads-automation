@@ -159,6 +159,13 @@ def extract_study_selection(text):
         "covariates",
         "study outcomes",
         "product codes",
+        "study variables",
+        "outcome variables",
+        "primary outcome",
+        "secondary outcome",
+        "statistical analysis",
+        "data analysis",
+        "variables",
     ]
 
     start_idx = None
