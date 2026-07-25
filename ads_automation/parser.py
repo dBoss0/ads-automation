@@ -8,6 +8,7 @@ DATA_SOURCE_MASTER = {
     # PREMIER
     "premier healthcare database": "Premier Healthcare Database",
     "pinc ai": "Premier Healthcare Database",
+    "pinc" : "Premier Healthcare Database",
 
     # OPTUM
     "optum clinformatics date of death": "Optum DOD/SES",
@@ -309,9 +310,19 @@ def extract_data_source_section(text):
     return text[start_idx:end_idx]
 
 
+def _normalize_text(text):
+    """Strip trademark/registered/copyright symbols and their text equivalents."""
+    text = text.replace("™", " ").replace("®", " ").replace("©", " ")
+    # superscript TM or R that python-docx merges directly onto words
+    text = re.sub(r"\bTM\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<=[a-zA-Z])TM(?=\s|$)", " ", text)
+    return re.sub(r"\s+", " ", text)
+
+
 def detect_data_source(text):
     section = extract_data_source_section(text)
-    search_text = (section if section else text).lower()
+    raw = section if section else text
+    search_text = _normalize_text(raw).lower()
 
     detected = []
     sorted_keys = sorted(DATA_SOURCE_MASTER.keys(), key=len, reverse=True)
