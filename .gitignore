@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv*/
+venv/
+env/
+ENV/
+
+# Notebooks output (generated, not source)
+notebooks/
+*.ipynb
+
+# Uploaded/test documents
+*.docx
+*.pdf
+
+# Local logo (app falls back to web URL on VDI)
+*.png
+*.jpg
+*.jpeg
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Streamlit cache
+.streamlit/
+
+# Temp
+*.tmp
+*.log
