@@ -224,7 +224,7 @@ def extract_steps(section_text):
         step = step.strip()
         step_lower = step.lower()
 
-        if len(step) < 15:
+        if len(step) < 5:
             continue
         if "inclusion criteria" in step_lower:
             continue
