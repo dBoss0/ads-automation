@@ -255,7 +255,7 @@ OUTPUT RULES:
 """
 
 
-def _call_claude(token: str, user_message: str, max_tokens: int = 2000) -> str:
+def _call_claude(token: str, user_message: str, max_tokens: int = 8000) -> str:
     payload = {
         "messages": [
             {"role": "system", "content": _STYLE_REFERENCE},
@@ -320,8 +320,11 @@ Write the complete SQL for target table {target_table} — banner comment,
 CREATE OR REPLACE TEMPORARY TABLE, and count check SELECT at the end.
 Return ONLY the SQL."""
 
+    # Step 1 (index admission) generates a much larger query — give it more room
+    max_tok = 12000 if step_num == 1 else 4000
+
     try:
-        sql = _call_claude(token, prompt)
+        sql = _call_claude(token, prompt, max_tokens=max_tok)
         # Strip accidental markdown fences if model adds them
         if sql.startswith("```"):
             sql = "\n".join(
