@@ -297,7 +297,16 @@ def _call_claude(token: str, user_message: str, max_tokens: int = 8000) -> str:
         timeout=120,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    content = resp.json()["choices"][0]["message"]["content"]
+    # Databricks may return content as a list of content blocks
+    # e.g. [{"type": "text", "text": "..."}] — extract and join the text parts
+    if isinstance(content, list):
+        content = "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return content.strip()
 
 
 def _clean_sql(raw: str) -> str:

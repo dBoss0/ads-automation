@@ -279,21 +279,40 @@ def generate_databricks_notebook(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fallback_waterfall(step_records):
+    """
+    Generates the attrition waterfall CTE.
+    First row: expanded SELECT with named columns (matches mock notebook style).
+    Subsequent rows: compact positional form.
+    Exclusion steps get an 'EXCLUDE: ' prefix on the description.
+    """
     rows = []
-    for n, stype, desc, tbl in step_records:
-        label     = "INC" if str(stype).lower() == "inclusion" else "EXC"
-        safe_desc = _escape(str(desc)[:80])
-        rows.append(
-            f"    SELECT {n} AS n, '{label}' AS type,\n"
-            f"           '{n}. {safe_desc}' AS step,\n"
-            f"           COUNT(*) AS enc, COUNT(DISTINCT medrec_key) AS pts\n"
-            f"    FROM {tbl}"
-        )
+    for i, (n, stype, desc, tbl) in enumerate(step_records):
+        is_exc    = str(stype).lower() != "inclusion"
+        label     = "EXC" if is_exc else "INC"
+        prefix    = "EXCLUDE: " if is_exc else ""
+        safe_desc = _escape(f"{n}. {prefix}{str(desc)[:70]}")
+
+        if i == 0:
+            # First row: full named-column form
+            rows.append(
+                f"    SELECT {n} AS n, '{label}' AS type,\n"
+                f"           '{safe_desc}' AS step,\n"
+                f"           COUNT(*) AS enc, COUNT(DISTINCT medrec_key) AS pts\n"
+                f"    FROM {tbl}"
+            )
+        else:
+            # Subsequent rows: compact positional form
+            rows.append(
+                f"    SELECT {n}, '{label}', '{safe_desc}',\n"
+                f"           COUNT(*), COUNT(DISTINCT medrec_key)\n"
+                f"    FROM {tbl}"
+            )
+
     union_all = "\n\n    UNION ALL\n".join(rows)
     return (
         f"-- ════════════════════════════════════════════════════════════════════════════\n"
         f"-- ATTRITION WATERFALL\n"
-        f"-- enc_dropped / pts_dropped = difference vs previous step\n"
+        f"-- enc_dropped / pts_dropped = difference from previous step\n"
         f"-- ════════════════════════════════════════════════════════════════════════════\n\n"
         f"WITH counts AS (\n\n"
         f"{union_all}\n\n"
