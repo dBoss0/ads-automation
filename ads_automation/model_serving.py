@@ -516,9 +516,91 @@ Requirements:
         return _fallback_sql(target_table, description, label, str(e))
 
 
+def _make_waterfall_fallback(step_records: list) -> str:
+    """Reliable Python-generated waterfall — used when LLM call fails or returns incomplete SQL."""
+    def _esc(s: str) -> str:
+        return s.replace("'", "''")
+
+    rows = []
+    for n, stype, desc, tbl in step_records:
+        label     = "INC" if str(stype).lower() == "inclusion" else "EXC"
+        safe_desc = _esc(str(desc)[:80])
+        rows.append(
+            f"    SELECT {n} AS n, '{label}' AS type, '{safe_desc}' AS step,\n"
+            f"           COUNT(*) AS enc, COUNT(DISTINCT medrec_key) AS pts\n"
+            f"    FROM {tbl}"
+        )
+    union_all = "\n    UNION ALL\n".join(rows)
+    return (
+        f"-- ════════════════════════════════════════════════════════════════════════════\n"
+        f"-- ATTRITION WATERFALL\n"
+        f"-- enc_dropped / pts_dropped = difference vs previous step\n"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n\n"
+        f"WITH counts AS (\n\n{union_all}\n\n)\n\n"
+        f"SELECT\n"
+        f"    n                                        AS step_num,\n"
+        f"    type                                     AS step_type,\n"
+        f"    step                                     AS step_description,\n"
+        f"    enc                                      AS enc_after,\n"
+        f"    pts                                      AS pts_after,\n"
+        f"    LAG(enc) OVER (ORDER BY n) - enc         AS enc_dropped,\n"
+        f"    LAG(pts) OVER (ORDER BY n) - pts         AS pts_dropped\n"
+        f"FROM counts\n"
+        f"ORDER BY n;"
+    )
+
+
+def _make_final_fallback(last_table: str) -> str:
+    """Reliable Python-generated final summary — used when LLM call fails or returns incomplete SQL."""
+    return (
+        f"-- ════════════════════════════════════════════════════════════════════════════\n"
+        f"-- FINAL COHORT SUMMARY — demographics, utilization, cost by surgery category\n"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n\n"
+        f"SELECT\n"
+        f"    surgery_category,\n"
+        f"    COUNT(*)                                             AS index_admissions,\n"
+        f"    COUNT(DISTINCT medrec_key)                           AS unique_patients,\n"
+        f"    COUNT(DISTINCT prov_id)                              AS hospitals,\n"
+        f"    ROUND(AVG(age),          1)                          AS mean_age,\n"
+        f"    SUM(CASE WHEN gender  = 'F' THEN 1 ELSE 0 END)       AS female_n,\n"
+        f"    SUM(CASE WHEN gender  = 'M' THEN 1 ELSE 0 END)       AS male_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'I' THEN 1 ELSE 0 END)       AS inpatient_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'O' THEN 1 ELSE 0 END)       AS outpatient_n,\n"
+        f"    ROUND(AVG(los),          1)                          AS mean_los_days,\n"
+        f"    ROUND(AVG(pat_cost),     0)                          AS mean_total_cost_usd,\n"
+        f"    ROUND(AVG(pat_fix_cost), 0)                          AS mean_room_board_cost_usd,\n"
+        f"    ROUND(AVG(pat_var_cost), 0)                          AS mean_variable_cost_usd,\n"
+        f"    ROUND(AVG(pat_charges),  0)                          AS mean_billed_charges_usd\n"
+        f"FROM {last_table}\n"
+        f"GROUP BY surgery_category\n"
+        f"ORDER BY surgery_category;"
+    )
+
+
+def _is_waterfall_complete(sql: str) -> bool:
+    s = sql.upper()
+    return (
+        sql.rstrip().endswith(";")
+        and "WITH COUNTS AS" in s
+        and "LAG(" in s
+        and "ENC_DROPPED" in s
+        and "PTS_DROPPED" in s
+    )
+
+
+def _is_final_complete(sql: str) -> bool:
+    s = sql.upper()
+    return (
+        sql.rstrip().endswith(";")
+        and "SURGERY_CATEGORY" in s
+        and "INDEX_ADMISSIONS" in s
+        and "MEAN_TOTAL_COST_USD" in s
+    )
+
+
 def generate_waterfall_sql(step_records: list, token: str) -> str:
     steps_info = "\n".join(
-        f"  {n}. [{stype.upper()[:3]}] {desc}  →  table: {tbl}"
+        f"  {n}. [{str(stype).upper()[:3]}] {desc}  →  table: {tbl}"
         for n, stype, desc, tbl in step_records
     )
 
@@ -532,13 +614,21 @@ Requirements:
 - WITH counts AS ( SELECT 1 AS n, 'INC'/'EXC' AS type, '<description>' AS step, COUNT(*) AS enc, COUNT(DISTINCT medrec_key) AS pts FROM <table> UNION ALL ... )
 - Final SELECT must include: n AS step_num, type AS step_type, step AS step_description, enc_after, pts_after, LAG(enc) OVER (ORDER BY n) - enc AS enc_dropped, LAG(pts) OVER (ORDER BY n) - pts AS pts_dropped
 - ORDER BY n
-- Return ONLY the complete SQL"""
+- Return ONLY the complete SQL. Do not truncate."""
 
     try:
-        sql = _clean_sql(_call_claude(token, prompt, max_tokens=4000))
-        return sql
-    except Exception as e:
-        return f"-- TODO: Waterfall query generation failed: {e}"
+        sql = _clean_sql(_call_claude(token, prompt, max_tokens=6000))
+        if not _is_waterfall_complete(sql):
+            retry = (
+                f"Your previous response was incomplete. Generate the COMPLETE waterfall SQL again. "
+                f"Do not stop early.\n\n{prompt}"
+            )
+            sql = _clean_sql(_call_claude(token, retry, max_tokens=6000))
+        if _is_waterfall_complete(sql):
+            return sql
+        return _make_waterfall_fallback(step_records)
+    except Exception:
+        return _make_waterfall_fallback(step_records)
 
 
 def generate_final_summary_sql(last_table: str, token: str) -> str:
@@ -552,13 +642,21 @@ Requirements:
   mean_age, female_n, male_n, inpatient_n, outpatient_n, mean_los_days,
   mean_total_cost_usd, mean_room_board_cost_usd, mean_variable_cost_usd, mean_billed_charges_usd
 - Use ROUND(AVG(...), 0) for cost columns, ROUND(AVG(...), 1) for age and LOS
-- Return ONLY the complete SQL"""
+- Return ONLY the complete SQL. Do not truncate."""
 
     try:
-        sql = _clean_sql(_call_claude(token, prompt, max_tokens=2000))
-        return sql
-    except Exception as e:
-        return f"-- TODO: Final summary generation failed: {e}"
+        sql = _clean_sql(_call_claude(token, prompt, max_tokens=3000))
+        if not _is_final_complete(sql):
+            sql = _clean_sql(_call_claude(
+                token,
+                f"Your previous response was incomplete. Regenerate the full final summary SQL.\n\n{prompt}",
+                max_tokens=3000,
+            ))
+        if _is_final_complete(sql):
+            return sql
+        return _make_final_fallback(last_table)
+    except Exception:
+        return _make_final_fallback(last_table)
 
 
 def _fallback_sql(target_table: str, description: str, label: str, error: str) -> str:

@@ -258,7 +258,12 @@ def generate_databricks_notebook(
             "Encounters and patients retained at each step, with drop counts."
         ))
         if use_llm:
-            cells.append(_llm_waterfall(step_records, token))
+            wf_sql = _llm_waterfall(step_records, token)
+            # Safety net: if LLM returned an error comment or invalid SQL, use reliable fallback
+            s = wf_sql.upper()
+            if not wf_sql.rstrip().endswith(";") or "TODO" in wf_sql[:60] or "LAG(" not in s:
+                wf_sql = _fallback_waterfall(step_records)
+            cells.append(wf_sql)
         else:
             cells.append(_fallback_waterfall(step_records))
 
@@ -270,7 +275,12 @@ def generate_databricks_notebook(
             "Demographics, utilization, and cost by surgery category."
         ))
         if use_llm:
-            cells.append(_llm_final(prev_table, token))
+            final_sql = _llm_final(prev_table, token)
+            # Safety net: if LLM returned an error comment or invalid SQL, use reliable fallback
+            sf = final_sql.upper()
+            if not final_sql.rstrip().endswith(";") or "TODO" in final_sql[:60] or "SURGERY_CATEGORY" not in sf:
+                final_sql = _fallback_final(prev_table)
+            cells.append(final_sql)
         else:
             cells.append(_fallback_final(prev_table))
 
