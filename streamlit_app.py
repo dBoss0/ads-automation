@@ -1422,37 +1422,51 @@ with cl_tab_excel:
                         if map_code_col == "— not in this sheet —":
                             st.warning("Select the column that contains the codes.")
                         else:
+                            # Filter rows where code is not empty — keeps all columns aligned
+                            code_mask = (
+                                df_sheet[map_code_col].notna() &
+                                (df_sheet[map_code_col].astype(str).str.strip() != "")
+                            )
+                            df_valid = df_sheet[code_mask].copy().reset_index(drop=True)
+
                             cond_vals = (
-                                df_sheet[map_cond_col].fillna("Unknown").astype(str).str.strip()
+                                df_valid[map_cond_col].fillna("Unknown").astype(str).str.strip()
                                 if map_cond_col != "— not in this sheet —"
-                                else pd.Series([map_cond_manual.strip() or sheet_name] * len(df_sheet))
+                                else pd.Series([map_cond_manual.strip() or sheet_name] * len(df_valid))
                             )
                             sys_vals = (
-                                df_sheet[map_sys_col].fillna("").astype(str).str.strip()
+                                df_valid[map_sys_col].fillna("").astype(str).str.strip()
                                 if map_sys_col != "— not in this sheet —"
-                                else pd.Series([map_sys_manual] * len(df_sheet))
+                                else pd.Series([map_sys_manual] * len(df_valid))
                             )
                             desc_vals = (
-                                df_sheet[map_desc_col].astype(str).str.strip()
+                                df_valid[map_desc_col].astype(str).str.strip()
                                 if map_desc_col != "— not in this sheet —"
-                                else pd.Series([""] * len(df_sheet))
+                                else pd.Series([""] * len(df_valid))
                             )
-                            raw_codes = df_sheet[map_code_col].dropna().astype(str).str.strip().str.upper()
+                            raw_codes = df_valid[map_code_col].astype(str).str.strip().str.upper()
+
                             new_rows = pd.DataFrame({
-                                "condition":     cond_vals.values[:len(raw_codes)],
-                                "coding_system": sys_vals.values[:len(raw_codes)],
+                                "condition":     cond_vals.values,
+                                "coding_system": sys_vals.values,
                                 "code":          raw_codes.values,
-                                "description":   desc_vals.values[:len(raw_codes)],
+                                "description":   desc_vals.values,
                             })
                             new_rows = new_rows[new_rows["code"].str.len() > 0].reset_index(drop=True)
+
                             if st.session_state.codelists_df is None:
                                 st.session_state.codelists_df = new_rows
                             else:
                                 st.session_state.codelists_df = pd.concat(
                                     [st.session_state.codelists_df, new_rows], ignore_index=True
                                 )
-                            sys_summary = sys_vals.unique().tolist() if map_sys_col != "— not in this sheet —" else [map_sys_manual]
-                            st.success(f"{len(new_rows)} codes imported from '{sheet_name}' — systems: {', '.join(str(s) for s in sys_summary)}.")
+
+                            conds   = new_rows["condition"].nunique()
+                            systems = new_rows["coding_system"].nunique()
+                            st.success(
+                                f"{len(new_rows)} codes imported from '{sheet_name}' — "
+                                f"{conds} condition(s), {systems} coding system(s)."
+                            )
                             st.rerun()
 
 # ── DISPLAY EXISTING CODE LISTS ───────────────────────────────────────────────
