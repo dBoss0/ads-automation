@@ -13,7 +13,7 @@ import streamlit as st
 
 from ads_automation.parser import parse_protocol
 from ads_automation.notebook_generator import generate_databricks_notebook
-from ads_automation.databricks_api import save_notebook, get_notebook_url, get_current_user, is_databricks_app
+from ads_automation.databricks_api import save_notebook, get_notebook_url, is_databricks_app
 from ads_automation.premier_ddl import generate_delta_ddl_notebook
 
 
@@ -1548,6 +1548,19 @@ if st.session_state.steps_df is not None:
     </div>
     """, unsafe_allow_html=True)
 
+    # Notebook path input — editable so user can point to any folder they have write access to
+    safe_title_default = (
+        "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
+    ) or "study"
+    nb_path_input = st.text_input(
+        "Databricks workspace path",
+        value=st.session_state.get("nb_path_override") or f"/Shared/ads_automation/{safe_title_default[:60]}_attrition",
+        help="Full workspace path where the notebook will be saved. Must start with /Users/<email>/ or /Shared/.",
+        key="nb_path_input",
+    )
+    if nb_path_input:
+        st.session_state.nb_path_override = nb_path_input
+
     col_gen, col_dl = st.columns([2, 1])
     with col_gen:
         push_btn = st.button(
@@ -1558,13 +1571,10 @@ if st.session_state.steps_df is not None:
         )
     with col_dl:
         if st.session_state.dbx_notebook_sql:
-            safe_title = (
-                "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
-            ) or "study"
             st.download_button(
                 "Download SQL",
                 data=st.session_state.dbx_notebook_sql,
-                file_name=f"{safe_title[:60]}_attrition.sql",
+                file_name=f"{safe_title_default[:60]}_attrition.sql",
                 mime="text/plain",
                 use_container_width=True,
             )
@@ -1572,7 +1582,7 @@ if st.session_state.steps_df is not None:
     if not st.session_state.dbx_token:
         st.markdown(
             f'<div style="font-size:0.78rem;color:{JNJ_GRAY_05};margin-top:0.5rem;">'
-            f'Enter your Databricks Personal Access Token in the sidebar to enable push.</div>',
+            f'Enter your Databricks Personal Access Token above to enable push.</div>',
             unsafe_allow_html=True,
         )
 
@@ -1602,21 +1612,10 @@ if st.session_state.steps_df is not None:
                     notebook_sql = None
 
             if notebook_sql:
-                with st.spinner("Pushing to Databricks…"):
-                    try:
-                        user_email = get_current_user(_DBX_HOST, st.session_state.dbx_token)
-                    except Exception:
-                        user_email = ""
+                nb_path = (st.session_state.get("nb_path_override") or "").strip() or \
+                          f"/Shared/ads_automation/{safe_title_default[:60]}_attrition"
 
-                    safe_title = (
-                        "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
-                    ) or "study"
-
-                    if user_email:
-                        nb_path = f"/Users/{user_email}/ads_automation/{safe_title[:60]}_attrition"
-                    else:
-                        nb_path = f"/Shared/ads_automation/{safe_title[:60]}_attrition"
-
+                with st.spinner(f"Pushing to {nb_path}…"):
                     try:
                         save_notebook(_DBX_HOST, st.session_state.dbx_token, nb_path, notebook_sql)
                         nb_url = get_notebook_url(_DBX_HOST, nb_path)
