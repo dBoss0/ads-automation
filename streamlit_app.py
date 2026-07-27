@@ -1603,6 +1603,7 @@ if st.session_state.steps_df is not None:
                         title=st.session_state.title,
                         steps_df=clean_df,
                         codelists_df=st.session_state.codelists_df,
+                        token=st.session_state.dbx_token,
                     )
                     st.session_state.dbx_notebook_sql = notebook_sql
                     st.session_state.steps_df = clean_df

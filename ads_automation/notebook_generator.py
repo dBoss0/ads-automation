@@ -2,6 +2,13 @@ import re
 from typing import Optional, List, Tuple
 import pandas as pd
 
+from ads_automation.model_serving import (
+    generate_step_sql as _llm_step,
+    generate_waterfall_sql as _llm_waterfall,
+    generate_final_summary_sql as _llm_final,
+    is_configured as _llm_ready,
+)
+
 PREMIER_CATALOG = "rhealth_premier_phd.bronze_native_premier_phd"
 CELL_SEP = "\n-- COMMAND ----------\n"
 NOTEBOOK_HEADER = "-- Databricks notebook source"
@@ -601,6 +608,8 @@ def generate_databricks_notebook(
     steps_df: pd.DataFrame,
     codelists_df: Optional[pd.DataFrame] = None,
     premier_catalog: str = PREMIER_CATALOG,
+    token: str = "",
+    study_window: str = "",
 ) -> str:
     """
     Generate a Databricks SOURCE-format SQL notebook.
@@ -658,22 +667,41 @@ def generate_databricks_notebook(
     step_records: List[Tuple[int, str, str, str]] = []
     prev_table = ""
 
+    # Build list of code list temp table names for context
+    code_table_names = []
+    if codelists_df is not None and not codelists_df.empty:
+        for (cond, sys), _ in codelists_df.groupby(["condition", "coding_system"]):
+            code_table_names.append(make_temp_table_name(str(cond), str(sys)))
+
+    use_llm = _llm_ready() and bool(token)
+
     for idx, row in clean_steps.iterrows():
         n     = idx + 1
         stype = str(row["step_type"])
         desc  = str(row["description"]).strip()
+        tbl   = "step1_surgery_index" if n == 1 else _step_table_name(n, desc)
 
-        if n == 1:
-            tbl = "step1_surgery_index"
-            sql = _index_admission_sql(codelists_df, tbl, premier_catalog, step_description=desc)
+        if use_llm:
+            sql = _llm_step(
+                step_num=n,
+                step_type=stype,
+                description=desc,
+                prev_table=prev_table if prev_table else "",
+                target_table=tbl,
+                token=token,
+                code_table_names=code_table_names,
+                study_window=study_window,
+            )
         else:
-            tbl, sql = _filter_step_sql(n, desc, stype, prev_table, premier_catalog)
+            if n == 1:
+                sql = _index_admission_sql(codelists_df, tbl, premier_catalog, step_description=desc)
+            else:
+                tbl, sql = _filter_step_sql(n, desc, stype, prev_table, premier_catalog)
 
         cells.append(_md_cell(
             f"%md\n"
             f"---\n"
-            f"## Cell {n + (2 if codelists_df is not None and not codelists_df.empty else 1)} "
-            f"— STEP {n} ({'INC' if stype == 'inclusion' else 'EXC'}): {desc}"
+            f"## STEP {n} ({'INC' if stype == 'inclusion' else 'EXC'}): {desc}"
         ))
         cells.append(sql)
         step_records.append((n, stype, desc, tbl))
@@ -687,7 +715,10 @@ def generate_databricks_notebook(
             "## Attrition Waterfall\n"
             "Encounters and patients retained at each step, with drop counts."
         ))
-        cells.append(_waterfall_sql(step_records))
+        if use_llm:
+            cells.append(_llm_waterfall(step_records, token))
+        else:
+            cells.append(_waterfall_sql(step_records))
 
     # ── Final cohort summary ──────────────────────────────────────────────────
     if prev_table:
@@ -697,6 +728,9 @@ def generate_databricks_notebook(
             "## Final Cohort Summary\n"
             "Demographics, utilization, and cost by surgery category."
         ))
-        cells.append(_final_cohort_sql(prev_table))
+        if use_llm:
+            cells.append(_llm_final(prev_table, token))
+        else:
+            cells.append(_final_cohort_sql(prev_table))
 
     return NOTEBOOK_HEADER + "\n" + CELL_SEP.join(cells)
