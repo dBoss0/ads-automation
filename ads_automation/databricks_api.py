@@ -19,7 +19,18 @@ def resolve_token(token: str) -> str:
 def save_notebook(host: str, token: str, path: str, content: str) -> dict:
     """Push a SOURCE-format SQL notebook to Databricks workspace."""
     h, t = resolve_host(host), resolve_token(token)
-    url = f"{h}/api/2.0/workspace/import"
+    headers = {"Authorization": f"Bearer {t}", "Content-Type": "application/json"}
+
+    # Ensure parent directory exists before importing
+    parent = "/".join(path.rstrip("/").split("/")[:-1])
+    if parent:
+        requests.post(
+            f"{h}/api/2.0/workspace/mkdirs",
+            headers=headers,
+            json={"path": parent},
+            timeout=15,
+        )
+
     payload = {
         "path": path,
         "format": "SOURCE",
@@ -28,8 +39,8 @@ def save_notebook(host: str, token: str, path: str, content: str) -> dict:
         "overwrite": True,
     }
     resp = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {t}", "Content-Type": "application/json"},
+        f"{h}/api/2.0/workspace/import",
+        headers=headers,
         json=payload,
         timeout=30,
     )

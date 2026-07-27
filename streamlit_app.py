@@ -1606,12 +1606,16 @@ if st.session_state.steps_df is not None:
                     try:
                         user_email = get_current_user(_DBX_HOST, st.session_state.dbx_token)
                     except Exception:
-                        user_email = "unknown"
+                        user_email = ""
 
                     safe_title = (
                         "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
                     ) or "study"
-                    nb_path = f"/Users/{user_email}/ads_automation/{safe_title[:60]}_attrition"
+
+                    if user_email:
+                        nb_path = f"/Users/{user_email}/ads_automation/{safe_title[:60]}_attrition"
+                    else:
+                        nb_path = f"/Shared/ads_automation/{safe_title[:60]}_attrition"
 
                     try:
                         save_notebook(_DBX_HOST, st.session_state.dbx_token, nb_path, notebook_sql)
