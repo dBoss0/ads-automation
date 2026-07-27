@@ -1055,6 +1055,29 @@ st.markdown(f"""
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown('<div class="jnj-inner jnj-content">', unsafe_allow_html=True)
 
+# ── DATABRICKS CONNECTION ─────────────────────────────────────────────────────
+if not is_databricks_app():
+    if not st.session_state.dbx_token:
+        st.warning("Enter your Databricks PAT token below to enable notebook generation.")
+    with st.expander("Databricks Connection", expanded=not st.session_state.dbx_token):
+        col_tok, col_btn = st.columns([5, 1])
+        with col_tok:
+            tok_val = st.text_input(
+                "Personal Access Token",
+                value=st.session_state.dbx_token if st.session_state.dbx_token != "__dbx_app__" else "",
+                type="password",
+                placeholder="Paste your dapi… token here",
+                key="dbx_token_main",
+            )
+        with col_btn:
+            st.markdown("<div style='margin-top:1.75rem;'></div>", unsafe_allow_html=True)
+            if st.button("Save", type="primary", use_container_width=True):
+                st.session_state.dbx_token = tok_val
+                st.session_state.dbx_notebook_url = None
+                st.rerun()
+        if st.session_state.dbx_token:
+            st.success("Token saved. Ready to push notebooks to Databricks.")
+
 
 # ── STEP 1: INPUT MODE ────────────────────────────────────────────────────────
 st.markdown("""
