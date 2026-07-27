@@ -875,15 +875,16 @@ html, body, [class*="css"] {{
 # session state
 # ─────────────────────────────────────────────────────────────────────────────
 for key, default in [
-    ("steps_df",         None),
-    ("title",            ""),
-    ("data_sources",     []),
-    ("notebook_path",    None),
-    ("input_mode",       None),
-    ("codelists_df",     None),
-    ("dbx_token",        ""),
-    ("dbx_notebook_url", None),
-    ("dbx_notebook_sql", None),
+    ("steps_df",            None),
+    ("title",               ""),
+    ("data_sources",        []),
+    ("notebook_path",       None),
+    ("input_mode",          None),
+    ("codelists_df",        None),
+    ("selected_conditions", None),   # None = all; list = user-chosen subset
+    ("dbx_token",           ""),
+    ("dbx_notebook_url",    None),
+    ("dbx_notebook_sql",    None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1534,7 +1535,58 @@ if st.session_state.codelists_df is not None and not st.session_state.codelists_
     st.markdown("<div style='margin-top:1rem;'></div>", unsafe_allow_html=True)
     if st.button("Clear All Code Lists", key="cl_clear_all", type="secondary"):
         st.session_state.codelists_df = None
+        st.session_state.selected_conditions = None
         st.rerun()
+
+    # ── Procedure category selector ───────────────────────────────────────────
+    all_conds = sorted(df_cl["condition"].unique().tolist())
+
+    # Auto-include any newly-imported conditions while preserving prior deselections
+    if st.session_state.selected_conditions is None:
+        st.session_state.selected_conditions = all_conds
+    else:
+        prev  = set(st.session_state.selected_conditions)
+        known = [c for c in st.session_state.selected_conditions if c in all_conds]
+        new   = [c for c in all_conds if c not in prev]
+        st.session_state.selected_conditions = known + new
+
+    st.markdown(f"""
+    <div style="margin-top:1.5rem;margin-bottom:0.5rem;">
+        <span style="font-size:0.68rem;font-weight:800;letter-spacing:0.15em;
+                     text-transform:uppercase;color:{JNJ_GRAY_05};">
+            Procedure Categories for Notebook Generation
+        </span>
+        <span style="font-size:0.72rem;color:{JNJ_GRAY_06};margin-left:0.75rem;">
+            Only selected categories will create temp tables and appear in Step 1 SQL
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    selected_conds = st.multiselect(
+        "Select categories to include",
+        options=all_conds,
+        default=st.session_state.selected_conditions,
+        key="condition_selector",
+        label_visibility="collapsed",
+    )
+    if selected_conds != st.session_state.selected_conditions:
+        st.session_state.selected_conditions = selected_conds
+
+    n_sel  = len(selected_conds)
+    n_excl = len(all_conds) - n_sel
+    if n_excl > 0:
+        excl_names = [c for c in all_conds if c not in selected_conds]
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:{JNJ_ORANGE};margin-top:0.3rem;">'
+            f'{n_excl} category excluded from notebook: {", ".join(excl_names)}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div style="font-size:0.75rem;color:{JNJ_GREEN_03};margin-top:0.3rem;">'
+            f'All {n_sel} categories selected.</div>',
+            unsafe_allow_html=True,
+        )
 
 # ── STEP 4: GENERATE & PUSH TO DATABRICKS ────────────────────────────────────
 if st.session_state.steps_df is not None:
@@ -1597,12 +1649,25 @@ if st.session_state.steps_df is not None:
         if clean_df.empty:
             st.warning("No valid steps found. Add at least one attrition step.")
         else:
+            # Filter codelists to only the categories the user selected
+            active_codelists = st.session_state.codelists_df
+            if (
+                active_codelists is not None
+                and not active_codelists.empty
+                and st.session_state.selected_conditions is not None
+            ):
+                active_codelists = active_codelists[
+                    active_codelists["condition"].isin(st.session_state.selected_conditions)
+                ].reset_index(drop=True)
+                if active_codelists.empty:
+                    active_codelists = None
+
             with st.spinner("Generating notebook…"):
                 try:
                     notebook_sql = generate_databricks_notebook(
                         title=st.session_state.title,
                         steps_df=clean_df,
-                        codelists_df=st.session_state.codelists_df,
+                        codelists_df=active_codelists,
                         token=st.session_state.dbx_token,
                     )
                     st.session_state.dbx_notebook_sql = notebook_sql

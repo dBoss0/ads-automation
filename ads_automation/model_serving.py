@@ -77,7 +77,33 @@ KEY TABLES AND EXACT FIELD NAMES:
     Use patcpt for CPT-4 codes (any position — no principal flag in Premier CPT).
     Use paticd_diag for ICD diagnosis codes.
 
-10. Return ONLY the SQL. No markdown fences, no explanations, no comments
+10. Window functions — pick the right one for each case:
+    • ROW_NUMBER(): select exactly ONE record per group (first admission, index encounter).
+      PARTITION BY the grouping key, ORDER BY the priority column.
+      Always filter WHERE rn = 1 in the outer SELECT.
+    • RANK(): when ties should share a rank and the next rank is skipped (e.g. same-day
+      procedures that are equally valid — keep all rank=1 rows).
+    • DENSE_RANK(): like RANK() but no gaps in rank numbers.
+    • LAG() / LEAD(): compare a row to the preceding/following row (waterfall drop counts,
+      readmission windows, consecutive-event logic).
+    Use window functions instead of self-joins or DISTINCT whenever you need to select
+    or compare specific records within a group.
+
+11. Continuous enrollment / hospital data contribution:
+    When a step requires "hospital must contribute data for N days after discharge" use:
+      WITH hospital_coverage AS (
+          SELECT prov_id, MAX(ip_max_dx_date) AS max_data_date
+          FROM rhealth_premier_phd.bronze_native_premier_phd.prov_enrollment
+          GROUP BY prov_id
+      )
+      SELECT s.*
+      FROM <prev_table> s
+      INNER JOIN hospital_coverage h ON s.prov_id = h.prov_id
+      WHERE h.max_data_date >= DATE_ADD(s.discharge_date, N);
+    Never use LEFT JOIN for enrollment — a missing hospital means the patient is excluded.
+    The count check should include COUNT(DISTINCT prov_id) AS qualifying_hospitals.
+
+12. Return ONLY the SQL. No markdown fences, no explanations, no comments
     outside the SQL itself.
 
 ═══════════════════════════ STEP EXAMPLES ════════════════════════════════════
