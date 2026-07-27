@@ -152,12 +152,31 @@ def _count_check(tbl: str, description: str, is_step1: bool = False) -> str:
 # Step 1 — index admission
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _match_conditions(codelists_df: pd.DataFrame, step_description: str) -> pd.DataFrame:
+    """
+    If the step description names specific conditions from the codelist, return only
+    those rows. Falls back to the full dataframe when no condition name is found.
+    """
+    if not step_description:
+        return codelists_df
+    d = step_description.lower()
+    all_conditions = codelists_df["condition"].dropna().unique().tolist()
+    matched = [c for c in all_conditions if c.lower() in d or any(
+        w in d for w in c.lower().split() if len(w) >= 4
+    )]
+    return codelists_df[codelists_df["condition"].isin(matched)] if matched else codelists_df
+
+
 def _index_admission_sql(
     codelists_df: Optional[pd.DataFrame],
     step_table: str,
     premier_catalog: str,
+    step_description: str = "",
 ) -> str:
     count_sql = _count_check(step_table, "step1", is_step1=True)
+
+    if codelists_df is not None and not codelists_df.empty:
+        codelists_df = _match_conditions(codelists_df, step_description)
 
     if codelists_df is None or codelists_df.empty:
         return (
@@ -298,10 +317,14 @@ def _index_admission_sql(
     ctes  = ",\n\n".join(cte_blocks)
     unions = "\n    UNION\n".join(union_parts)
 
+    active_conditions = sorted({cond for cond, _, _, *_ in icd_proc + icd_diag + [(c,s,t) for c,s,t in cpt_list] + [(c,s,t) for c,s,t in drg_list]})
+    cond_comment = ", ".join(active_conditions) if active_conditions else "all conditions"
+
     return (
         f"-- ═══════════════════════════════════════════════════════════════\n"
         f"-- STEP 1 (INCLUSION)\n"
         f"-- Primary surgery procedure code — index admission\n"
+        f"-- Conditions: {cond_comment}\n"
         f"-- Index = first qualifying admission per patient per surgery category\n"
         f"-- ═══════════════════════════════════════════════════════════════\n\n"
         f"CREATE OR REPLACE TEMPORARY TABLE {step_table} AS\n\n"
@@ -642,7 +665,7 @@ def generate_databricks_notebook(
 
         if n == 1:
             tbl = "step1_surgery_index"
-            sql = _index_admission_sql(codelists_df, tbl, premier_catalog)
+            sql = _index_admission_sql(codelists_df, tbl, premier_catalog, step_description=desc)
         else:
             tbl, sql = _filter_step_sql(n, desc, stype, prev_table, premier_catalog)
 
