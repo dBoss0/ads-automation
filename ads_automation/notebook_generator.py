@@ -27,19 +27,124 @@ def _md_cell(text: str) -> str:
     return "\n".join(f"-- MAGIC {ln}" if ln.strip() else "-- MAGIC " for ln in lines)
 
 
+def _escape(s: str) -> str:
+    return s.replace("'", "''")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Code-list cells
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _codelist_sql(condition: str, coding_system: str, codes: List[str]) -> str:
+def _codelist_sql(
+    condition: str,
+    coding_system: str,
+    rows: List[Tuple[str, str]],  # (code, description)
+) -> str:
     tbl = make_temp_table_name(condition, coding_system)
-    vals = ",\n  ".join(f"('{c.strip()}')" for c in codes if c.strip())
+    has_desc = any(d.strip() for _, d in rows)
+
+    if has_desc:
+        vals = ",\n  ".join(
+            f"('{_escape(c)}', '{_escape(d)}')"
+            for c, d in rows if c.strip()
+        )
+        schema = "AS t(code, description)"
+    else:
+        vals = ",\n  ".join(f"('{_escape(c)}')" for c, _ in rows if c.strip())
+        schema = "AS t(code)"
+
     return (
+        f"-- Condition: {condition} | System: {coding_system}\n"
         f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
-        f"SELECT code FROM (\n"
-        f"  VALUES\n"
+        f"SELECT * FROM VALUES\n"
         f"  {vals}\n"
-        f") t(code);"
+        f"{schema};\n\n"
+        f"SELECT COUNT(*) AS codes FROM {tbl};"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Count-check SELECT — appended to each step cell
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _count_check(tbl: str, description: str, is_step1: bool = False) -> str:
+    d = description.lower()
+    if is_step1:
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    surgery_category,\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients\n"
+            f"FROM {tbl}\n"
+            f"GROUP BY surgery_category\n"
+            f"ORDER BY surgery_category;"
+        )
+    if "age" in d:
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients,\n"
+            f"    MIN(age)                   AS min_age,\n"
+            f"    MAX(age)                   AS max_age,\n"
+            f"    ROUND(AVG(age), 1)         AS mean_age\n"
+            f"FROM {tbl};"
+        )
+    if "gender" in d or "sex" in d:
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    gender,\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients\n"
+            f"FROM {tbl}\n"
+            f"GROUP BY gender ORDER BY gender;"
+        )
+    if any(kw in d for kw in ["90", "hospital contribution", "data contribution", "enrollment"]):
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients,\n"
+            f"    COUNT(DISTINCT prov_id)    AS qualifying_hospitals\n"
+            f"FROM {tbl};"
+        )
+    if any(kw in d for kw in ["publish", "comparative valid", " cv"]):
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients,\n"
+            f"    COUNT(DISTINCT prov_id)    AS cv_hospitals\n"
+            f"FROM {tbl};"
+        )
+    if "cost" in d:
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    COUNT(*)                   AS index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS unique_patients,\n"
+            f"    ROUND(MIN(pat_cost), 0)    AS min_total_cost,\n"
+            f"    ROUND(AVG(pat_cost), 0)    AS avg_total_cost,\n"
+            f"    ROUND(MAX(pat_cost), 0)    AS max_total_cost\n"
+            f"FROM {tbl};"
+        )
+    if any(kw in d for kw in ["null", "missing", "complete", "not null"]):
+        return (
+            f"-- Count check\n"
+            f"SELECT\n"
+            f"    COUNT(*)                   AS final_index_admissions,\n"
+            f"    COUNT(DISTINCT medrec_key) AS final_unique_patients,\n"
+            f"    COUNT(DISTINCT prov_id)    AS hospitals\n"
+            f"FROM {tbl};"
+        )
+    return (
+        f"-- Count check\n"
+        f"SELECT\n"
+        f"    COUNT(*)                   AS index_admissions,\n"
+        f"    COUNT(DISTINCT medrec_key) AS unique_patients\n"
+        f"FROM {tbl};"
     )
 
 
@@ -52,8 +157,14 @@ def _index_admission_sql(
     step_table: str,
     premier_catalog: str,
 ) -> str:
+    count_sql = _count_check(step_table, "step1", is_step1=True)
+
     if codelists_df is None or codelists_df.empty:
         return (
+            f"-- ═══════════════════════════════════════════════════════════════\n"
+            f"-- STEP 1 (INCLUSION)\n"
+            f"-- Primary surgery procedure code — index admission\n"
+            f"-- ═══════════════════════════════════════════════════════════════\n\n"
             f"CREATE OR REPLACE TEMPORARY TABLE {step_table} AS\n"
             f"-- TODO: No code lists provided — add procedure/diagnosis code matching logic\n"
             f"SELECT\n"
@@ -64,10 +175,11 @@ def _index_admission_sql(
             f"    CAST(NULL AS STRING) AS surgery_category\n"
             f"FROM {premier_catalog}.pat\n"
             f"WHERE 1=1  -- TODO: Add study window filter (e.g. admit_date BETWEEN ... AND ...)\n"
-            f"LIMIT 0;"
+            f"LIMIT 0;\n\n"
+            f"{count_sql}"
         )
 
-    icd_proc = []   # (condition, coding_system, tmp_tbl, version)
+    icd_proc = []
     icd_diag = []
     cpt_list = []
     drg_list = []
@@ -97,7 +209,7 @@ def _index_admission_sql(
             for i, (c, s, tmp, v) in enumerate(icd_proc)
         )
         cases = "\n".join(
-            f"            WHEN a{i}.code IS NOT NULL THEN '{c}'"
+            f"            WHEN a{i}.code IS NOT NULL THEN '{_escape(c)}'"
             for i, (c, s, tmp, v) in enumerate(icd_proc)
         )
         coalesce = ", ".join(f"a{i}.code" for i in range(len(icd_proc)))
@@ -129,7 +241,7 @@ def _index_admission_sql(
             for i, (c, s, tmp, v) in enumerate(icd_diag)
         )
         cases = "\n".join(
-            f"            WHEN b{i}.code IS NOT NULL THEN '{c}'"
+            f"            WHEN b{i}.code IS NOT NULL THEN '{_escape(c)}'"
             for i, (c, s, tmp, v) in enumerate(icd_diag)
         )
         coalesce = ", ".join(f"b{i}.code" for i in range(len(icd_diag)))
@@ -156,7 +268,7 @@ def _index_admission_sql(
     # ── CPT / HCPCS ───────────────────────────────────────────────────────────
     if cpt_list:
         selects = "\n    UNION\n".join(
-            f"    SELECT DISTINCT cp.pat_key, '{c}' AS surgery_category\n"
+            f"    SELECT DISTINCT cp.pat_key, '{_escape(c)}' AS surgery_category\n"
             f"    FROM {premier_catalog}.patcpt cp\n"
             f"    INNER JOIN {tmp} cl{i} ON cp.cpt_code = cl{i}.code"
             for i, (c, s, tmp) in enumerate(cpt_list)
@@ -167,7 +279,7 @@ def _index_admission_sql(
     # ── DRG ───────────────────────────────────────────────────────────────────
     if drg_list:
         selects = "\n    UNION\n".join(
-            f"    SELECT DISTINCT p2.pat_key, '{c}' AS surgery_category\n"
+            f"    SELECT DISTINCT p2.pat_key, '{_escape(c)}' AS surgery_category\n"
             f"    FROM {premier_catalog}.pat p2\n"
             f"    INNER JOIN {tmp} dl{i} ON p2.ms_drg = dl{i}.code"
             for i, (c, s, tmp) in enumerate(drg_list)
@@ -179,13 +291,19 @@ def _index_admission_sql(
         return (
             f"CREATE OR REPLACE TEMPORARY TABLE {step_table} AS\n"
             f"-- TODO: Unrecognized coding systems — add matching logic\n"
-            f"SELECT * FROM {premier_catalog}.pat WHERE 1=0;"
+            f"SELECT * FROM {premier_catalog}.pat WHERE 1=0;\n\n"
+            f"{count_sql}"
         )
 
-    ctes = ",\n\n".join(cte_blocks)
+    ctes  = ",\n\n".join(cte_blocks)
     unions = "\n    UNION\n".join(union_parts)
 
     return (
+        f"-- ═══════════════════════════════════════════════════════════════\n"
+        f"-- STEP 1 (INCLUSION)\n"
+        f"-- Primary surgery procedure code — index admission\n"
+        f"-- Index = first qualifying admission per patient per surgery category\n"
+        f"-- ═══════════════════════════════════════════════════════════════\n\n"
         f"CREATE OR REPLACE TEMPORARY TABLE {step_table} AS\n\n"
         f"WITH\n\n"
         f"{ctes},\n\n"
@@ -214,7 +332,8 @@ def _index_admission_sql(
         f"    pat_cost, pat_charges, pat_fix_cost, pat_var_cost,\n"
         f"    disc_status, surgery_category\n"
         f"FROM ranked\n"
-        f"WHERE rn = 1;"
+        f"WHERE rn = 1;\n\n"
+        f"{count_sql}"
     )
 
 
@@ -231,14 +350,26 @@ def _filter_step_sql(
 ) -> Tuple[str, str]:
     """Returns (step_table_name, sql_string)."""
     tbl = _step_table_name(step_num, description)
-    d = description.lower()
+    d   = description.lower()
+    inc = step_type == "inclusion"
+    label = "INCLUSION" if inc else "EXCLUSION"
+
+    def _wrap(filter_sql: str) -> str:
+        count_sql = _count_check(tbl, d)
+        return (
+            f"-- ═══════════════════════════════════════════════════════════════\n"
+            f"-- STEP {step_num} ({label}): {description}\n"
+            f"-- ═══════════════════════════════════════════════════════════════\n\n"
+            f"{filter_sql}\n\n"
+            f"{count_sql}"
+        )
 
     # ── Age ──────────────────────────────────────────────────────────────────
     if "age" in d:
-        m = re.search(r"(\d+)", d)
+        m     = re.search(r"(\d+)", d)
         thresh = int(m.group(1)) if m else 18
-        op = ">=" if step_type == "inclusion" else "<"
-        return tbl, (
+        op    = ">=" if inc else "<"
+        return tbl, _wrap(
             f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
             f"SELECT * FROM {prev_table}\n"
             f"WHERE age {op} {thresh};"
@@ -246,14 +377,14 @@ def _filter_step_sql(
 
     # ── Known gender ─────────────────────────────────────────────────────────
     if "gender" in d or "sex" in d:
-        if step_type == "inclusion":
-            return tbl, (
+        if inc:
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE gender IN ('M', 'F');"
             )
         else:
-            return tbl, (
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE gender NOT IN ('M', 'F');"
@@ -261,7 +392,7 @@ def _filter_step_sql(
 
     # ── Hospital 90-day data contribution ────────────────────────────────────
     if any(kw in d for kw in ["90", "hospital contribution", "data contribution", "enrollment"]):
-        if step_type == "inclusion":
+        if inc:
             sql = (
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n\n"
                 f"WITH hospital_last_data AS (\n"
@@ -288,18 +419,18 @@ def _filter_step_sql(
                 f"WHERE h.max_data_date < DATE_ADD(s.discharge_date, 90)\n"
                 f"   OR h.prov_id IS NULL;"
             )
-        return tbl, sql
+        return tbl, _wrap(sql)
 
     # ── Publish type / Comparative Valid ─────────────────────────────────────
     if any(kw in d for kw in ["publish", "comparative valid", " cv"]):
-        if step_type == "inclusion":
-            return tbl, (
+        if inc:
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE publish_type = 'CV';"
             )
         else:
-            return tbl, (
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE publish_type <> 'CV';"
@@ -307,14 +438,14 @@ def _filter_step_sql(
 
     # ── Inpatient ─────────────────────────────────────────────────────────────
     if "inpatient" in d:
-        if step_type == "inclusion":
-            return tbl, (
+        if inc:
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE i_o_ind = 'I';"
             )
         else:
-            return tbl, (
+            return tbl, _wrap(
                 f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
                 f"SELECT * FROM {prev_table}\n"
                 f"WHERE i_o_ind <> 'I';"
@@ -322,31 +453,34 @@ def _filter_step_sql(
 
     # ── Cost > 0 ──────────────────────────────────────────────────────────────
     if "cost" in d:
-        return tbl, (
+        return tbl, _wrap(
             f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
             f"SELECT * FROM {prev_table}\n"
-            f"WHERE pat_cost > 0\n"
+            f"WHERE pat_cost     > 0\n"
             f"  AND pat_fix_cost > 0\n"
             f"  AND pat_var_cost > 0;"
         )
 
     # ── Null / complete data ──────────────────────────────────────────────────
     if any(kw in d for kw in ["null", "missing", "complete", "not null"]):
-        return tbl, (
+        return tbl, _wrap(
             f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
             f"SELECT * FROM {prev_table}\n"
-            f"WHERE pat_key IS NOT NULL\n"
-            f"  AND medrec_key IS NOT NULL\n"
-            f"  AND index_date IS NOT NULL\n"
-            f"  AND surgery_category IS NOT NULL;"
+            f"WHERE age            IS NOT NULL\n"
+            f"  AND gender         IS NOT NULL\n"
+            f"  AND prov_id        IS NOT NULL\n"
+            f"  AND index_date     IS NOT NULL\n"
+            f"  AND discharge_date IS NOT NULL\n"
+            f"  AND pat_cost       IS NOT NULL\n"
+            f"  AND los            IS NOT NULL;"
         )
 
     # ── LOS ───────────────────────────────────────────────────────────────────
     if "los" in d or "length of stay" in d:
-        m = re.search(r"(\d+)", d)
+        m     = re.search(r"(\d+)", d)
         thresh = int(m.group(1)) if m else 1
-        op = ">=" if step_type == "inclusion" else "<"
-        return tbl, (
+        op    = ">=" if inc else "<"
+        return tbl, _wrap(
             f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
             f"SELECT * FROM {prev_table}\n"
             f"WHERE los {op} {thresh};"
@@ -354,20 +488,19 @@ def _filter_step_sql(
 
     # ── DRG filter ────────────────────────────────────────────────────────────
     if "drg" in d:
-        return tbl, (
+        return tbl, _wrap(
             f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
             f"SELECT * FROM {prev_table}\n"
             f"WHERE ms_drg IS NOT NULL;  -- TODO: Specify DRG range for: {description}"
         )
 
     # ── Fallback placeholder ─────────────────────────────────────────────────
-    inc_note = "met" if step_type == "inclusion" else "NOT met"
-    return tbl, (
+    inc_note = "met" if inc else "NOT met"
+    return tbl, _wrap(
         f"CREATE OR REPLACE TEMPORARY TABLE {tbl} AS\n"
-        f"-- {step_type.upper()}: keep records where this criterion is {inc_note}\n"
         f"-- TODO: Implement filter for: {description}\n"
         f"SELECT * FROM {prev_table}\n"
-        f"WHERE 1=1;  -- REPLACE with actual criterion"
+        f"WHERE 1=1;  -- REPLACE with actual criterion ({label}: {inc_note})"
     )
 
 
@@ -379,8 +512,8 @@ def _waterfall_sql(step_records: List[Tuple[int, str, str, str]]) -> str:
     """step_records: list of (n, step_type, description, table_name)"""
     rows = []
     for n, stype, desc, tbl in step_records:
-        label = stype.upper()[:3]
-        safe_desc = desc.replace("'", "\\'")[:80]
+        label    = stype.upper()[:3]
+        safe_desc = _escape(desc[:80])
         rows.append(
             f"    SELECT {n} AS n, '{label}' AS step_type, '{safe_desc}' AS step_description,\n"
             f"           COUNT(*) AS enc_after, COUNT(DISTINCT medrec_key) AS pts_after\n"
@@ -390,17 +523,21 @@ def _waterfall_sql(step_records: List[Tuple[int, str, str, str]]) -> str:
     union_all = "\n    UNION ALL\n".join(rows)
 
     return (
+        f"-- ═══════════════════════════════════════════════════════════════\n"
+        f"-- ATTRITION WATERFALL\n"
+        f"-- enc_dropped / pts_dropped = difference from previous step\n"
+        f"-- ═══════════════════════════════════════════════════════════════\n\n"
         f"WITH counts AS (\n"
         f"{union_all}\n"
         f")\n\n"
         f"SELECT\n"
-        f"    n AS step_num,\n"
+        f"    n                                              AS step_num,\n"
         f"    step_type,\n"
         f"    step_description,\n"
         f"    enc_after,\n"
         f"    pts_after,\n"
-        f"    LAG(enc_after) OVER (ORDER BY n) - enc_after AS enc_dropped,\n"
-        f"    LAG(pts_after) OVER (ORDER BY n) - pts_after AS pts_dropped\n"
+        f"    LAG(enc_after) OVER (ORDER BY n) - enc_after  AS enc_dropped,\n"
+        f"    LAG(pts_after) OVER (ORDER BY n) - pts_after  AS pts_dropped\n"
         f"FROM counts\n"
         f"ORDER BY n;"
     )
@@ -408,17 +545,27 @@ def _waterfall_sql(step_records: List[Tuple[int, str, str, str]]) -> str:
 
 def _final_cohort_sql(last_table: str) -> str:
     return (
+        f"-- ═══════════════════════════════════════════════════════════════\n"
+        f"-- FINAL COHORT SUMMARY — by surgery category\n"
+        f"-- ═══════════════════════════════════════════════════════════════\n\n"
         f"SELECT\n"
         f"    surgery_category,\n"
-        f"    COUNT(*)                   AS encounters,\n"
-        f"    COUNT(DISTINCT medrec_key) AS patients,\n"
-        f"    COUNT(DISTINCT prov_id)    AS hospitals,\n"
-        f"    ROUND(AVG(los), 1)         AS avg_los,\n"
-        f"    ROUND(AVG(age), 1)         AS avg_age,\n"
-        f"    ROUND(AVG(pat_cost), 0)    AS avg_total_cost\n"
+        f"    COUNT(*)                                             AS index_admissions,\n"
+        f"    COUNT(DISTINCT medrec_key)                           AS unique_patients,\n"
+        f"    COUNT(DISTINCT prov_id)                              AS hospitals,\n"
+        f"    ROUND(AVG(age), 1)                                   AS mean_age,\n"
+        f"    SUM(CASE WHEN gender  = 'F' THEN 1 ELSE 0 END)       AS female_n,\n"
+        f"    SUM(CASE WHEN gender  = 'M' THEN 1 ELSE 0 END)       AS male_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'I' THEN 1 ELSE 0 END)       AS inpatient_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'O' THEN 1 ELSE 0 END)       AS outpatient_n,\n"
+        f"    ROUND(AVG(los), 1)                                   AS mean_los_days,\n"
+        f"    ROUND(AVG(pat_cost),     0)                          AS mean_total_cost_usd,\n"
+        f"    ROUND(AVG(pat_fix_cost), 0)                          AS mean_room_board_cost_usd,\n"
+        f"    ROUND(AVG(pat_var_cost), 0)                          AS mean_variable_cost_usd,\n"
+        f"    ROUND(AVG(pat_charges),  0)                          AS mean_billed_charges_usd\n"
         f"FROM {last_table}\n"
         f"GROUP BY surgery_category\n"
-        f"ORDER BY encounters DESC;"
+        f"ORDER BY surgery_category;"
     )
 
 
@@ -442,24 +589,41 @@ def generate_databricks_notebook(
     cells.append(_md_cell(
         f"%md\n"
         f"# {title}\n\n"
-        f"**Attrition Cohort Notebook** | Generated by ADS Automation Platform  \n"
-        f"Premier PHD · Catalog: `{premier_catalog}`\n\n"
+        f"**Attrition Cohort Notebook** | J&J MedTech ADS Automation Platform  \n"
+        f"Data Source: Premier PHD (PINC AI™ Healthcare Database)  \n"
+        f"Catalog: `{premier_catalog}`\n\n"
         f"---\n\n"
         f"**Run All Cells** to execute the full attrition pipeline.  \n"
-        f"Each cell creates a `TEMPORARY TABLE` scoped to this session."
+        f"Each cell creates a `TEMPORARY TABLE` — session-scoped, auto-dropped when session ends.  \n"
+        f"Each step reads from the previous step's temp table — counts can be checked at any step."
     ))
 
     # ── Code list temp tables ─────────────────────────────────────────────────
     if codelists_df is not None and not codelists_df.empty:
-        cells.append(_md_cell("%md\n## Code Lists\nTemporary tables for each condition × coding system."))
+        cells.append(_md_cell(
+            "%md\n"
+            "---\n"
+            "## Code List Temp Tables\n"
+            "One table per condition × coding system. Each cell ends with a row count."
+        ))
 
         for (cond, sys), grp in codelists_df.groupby(["condition", "coding_system"]):
-            codes = grp["code"].dropna().astype(str).str.strip().tolist()
-            if codes:
-                cells.append(_codelist_sql(cond, sys, codes))
+            desc_col = "description" if "description" in grp.columns else None
+            pairs = list(zip(
+                grp["code"].fillna("").astype(str).str.strip(),
+                grp[desc_col].fillna("").astype(str).str.strip() if desc_col else [""] * len(grp),
+            ))
+            pairs = [(c, d) for c, d in pairs if c]
+            if pairs:
+                cells.append(_codelist_sql(str(cond), str(sys), pairs))
 
     # ── Attrition steps ───────────────────────────────────────────────────────
-    cells.append(_md_cell("%md\n## Attrition Steps\nEach step filters from the prior step's cohort."))
+    cells.append(_md_cell(
+        "%md\n"
+        "---\n"
+        "## Attrition Steps\n"
+        "Each step filters from the prior step's cohort. Each cell ends with a count check."
+    ))
 
     clean_steps = (
         steps_df
@@ -472,7 +636,7 @@ def generate_databricks_notebook(
     prev_table = ""
 
     for idx, row in clean_steps.iterrows():
-        n    = idx + 1
+        n     = idx + 1
         stype = str(row["step_type"])
         desc  = str(row["description"]).strip()
 
@@ -482,19 +646,34 @@ def generate_databricks_notebook(
         else:
             tbl, sql = _filter_step_sql(n, desc, stype, prev_table, premier_catalog)
 
-        cells.append(_md_cell(f"%md\n### Step {n} — {'INC' if stype == 'inclusion' else 'EXC'}: {desc}"))
+        cells.append(_md_cell(
+            f"%md\n"
+            f"---\n"
+            f"## Cell {n + (2 if codelists_df is not None and not codelists_df.empty else 1)} "
+            f"— STEP {n} ({'INC' if stype == 'inclusion' else 'EXC'}): {desc}"
+        ))
         cells.append(sql)
         step_records.append((n, stype, desc, tbl))
         prev_table = tbl
 
     # ── Attrition waterfall ───────────────────────────────────────────────────
     if step_records:
-        cells.append(_md_cell("%md\n## Attrition Waterfall\nEncounters and patients at each step, with drop counts."))
+        cells.append(_md_cell(
+            "%md\n"
+            "---\n"
+            "## Attrition Waterfall\n"
+            "Encounters and patients retained at each step, with drop counts."
+        ))
         cells.append(_waterfall_sql(step_records))
 
     # ── Final cohort summary ──────────────────────────────────────────────────
     if prev_table:
-        cells.append(_md_cell("%md\n## Final Cohort Summary\nBy surgery category."))
+        cells.append(_md_cell(
+            "%md\n"
+            "---\n"
+            "## Final Cohort Summary\n"
+            "Demographics, utilization, and cost by surgery category."
+        ))
         cells.append(_final_cohort_sql(prev_table))
 
     return NOTEBOOK_HEADER + "\n" + CELL_SEP.join(cells)
