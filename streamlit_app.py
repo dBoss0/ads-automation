@@ -1406,12 +1406,17 @@ with cl_tab_excel:
                             "Condition column (if in file)", col_options, key=f"map_cond_col_{sheet_name}")
                         map_cond_manual = st.text_input(
                             "— or type condition name", placeholder="e.g. TKA", key=f"map_cond_txt_{sheet_name}")
+                        map_sys_col     = st.selectbox(
+                            "Coding system column (if mixed in this sheet)", col_options, key=f"map_sys_col_{sheet_name}")
                         map_sys_manual  = st.selectbox(
-                            "Coding system",
+                            "— or select one coding system for all rows",
                             CODING_SYSTEMS,
                             index=guessed_idx,
                             key=f"map_sys_sel_{sheet_name}",
                         )
+
+                    if map_sys_col != "— not in this sheet —":
+                        st.info(f"Each row's coding system will be read from column **{map_sys_col}**.")
 
                     if st.button(f"Import — {sheet_name}", type="primary", key=f"cl_import_{sheet_name}"):
                         if map_code_col == "— not in this sheet —":
@@ -1422,6 +1427,11 @@ with cl_tab_excel:
                                 if map_cond_col != "— not in this sheet —"
                                 else pd.Series([map_cond_manual.strip() or sheet_name] * len(df_sheet))
                             )
+                            sys_vals = (
+                                df_sheet[map_sys_col].fillna("").astype(str).str.strip()
+                                if map_sys_col != "— not in this sheet —"
+                                else pd.Series([map_sys_manual] * len(df_sheet))
+                            )
                             desc_vals = (
                                 df_sheet[map_desc_col].astype(str).str.strip()
                                 if map_desc_col != "— not in this sheet —"
@@ -1430,7 +1440,7 @@ with cl_tab_excel:
                             raw_codes = df_sheet[map_code_col].dropna().astype(str).str.strip().str.upper()
                             new_rows = pd.DataFrame({
                                 "condition":     cond_vals.values[:len(raw_codes)],
-                                "coding_system": pd.Series([map_sys_manual] * len(raw_codes)),
+                                "coding_system": sys_vals.values[:len(raw_codes)],
                                 "code":          raw_codes.values,
                                 "description":   desc_vals.values[:len(raw_codes)],
                             })
@@ -1441,7 +1451,8 @@ with cl_tab_excel:
                                 st.session_state.codelists_df = pd.concat(
                                     [st.session_state.codelists_df, new_rows], ignore_index=True
                                 )
-                            st.success(f"{len(new_rows)} codes imported from '{sheet_name}' as {map_sys_manual}.")
+                            sys_summary = sys_vals.unique().tolist() if map_sys_col != "— not in this sheet —" else [map_sys_manual]
+                            st.success(f"{len(new_rows)} codes imported from '{sheet_name}' — systems: {', '.join(str(s) for s in sys_summary)}.")
                             st.rerun()
 
 # ── DISPLAY EXISTING CODE LISTS ───────────────────────────────────────────────
