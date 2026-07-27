@@ -12,7 +12,9 @@ import pandas as pd
 import streamlit as st
 
 from ads_automation.parser import parse_protocol
-from ads_automation.notebook_generator import create_notebook
+from ads_automation.notebook_generator import generate_databricks_notebook
+from ads_automation.databricks_api import save_notebook, get_notebook_url, get_current_user, is_databricks_app
+from ads_automation.premier_ddl import generate_delta_ddl_notebook
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -24,10 +26,6 @@ _LOGO_WEB_URL = (
     "https://play-lh.googleusercontent.com/"
     "goJEGZ2I1rekFkK_Os2Hq6tgG_Iz07Wy6CyW2ti-Tn-j9_SiFVfAoQ6qKZKRJT-O_znd4tgvOgWK_8uHxWcBOQ"
 )
-_MUSIGMA_LOGO_URL = (
-    "https://yt3.googleusercontent.com/ytc/"
-    "AIdro_k-7HkbByPWjKpVPO3LCF8XYlKuQuwROO0vf3zo1cqgoaE=s900-c-k-c0x00ffffff-no-rj"
-)
 
 def _logo_src() -> str:
     """Local file as base64 data-URI (portable); falls back to web URL on VDI / any machine."""
@@ -36,6 +34,8 @@ def _logo_src() -> str:
         return f"data:image/png;base64,{b64}"
     return _LOGO_WEB_URL
 
+
+_DBX_HOST = "https://dbc-db3d8a4e-f2cf.cloud.databricks.com"
 
 JNJ_RED     = "#eb1700"
 JNJ_MAROON  = "#9e0000"
@@ -217,7 +217,7 @@ html, body, [class*="css"] {{
     border-radius: 100px;
     white-space: nowrap;
 }}
-/* "Powered by Mu Sigma" block in nav */
+/* nav built-by block */
 .jnj-nav-built-by {{
     display: flex;
     align-items: center;
@@ -875,12 +875,15 @@ html, body, [class*="css"] {{
 # session state
 # ─────────────────────────────────────────────────────────────────────────────
 for key, default in [
-    ("steps_df",       None),
-    ("title",          ""),
-    ("data_sources",   []),
-    ("notebook_path",  None),
-    ("input_mode",     None),
-    ("codelists_df",   None),
+    ("steps_df",         None),
+    ("title",            ""),
+    ("data_sources",     []),
+    ("notebook_path",    None),
+    ("input_mode",       None),
+    ("codelists_df",     None),
+    ("dbx_token",        ""),
+    ("dbx_notebook_url", None),
+    ("dbx_notebook_sql", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -904,12 +907,6 @@ st.markdown(f"""
     </div>
     <div class="jnj-nav-right">
         <span class="jnj-nav-tag">Code Automation</span>
-        <div class="jnj-nav-built-by">
-            <span class="jnj-nav-built-label">Powered by</span>
-            <img src="{_MUSIGMA_LOGO_URL}"
-                 style="height:clamp(22px,3.5vw,30px);width:auto;display:block;border-radius:4px;"
-                 alt="Mu Sigma">
-        </div>
         <span class="jnj-nav-version">v1.0.0</span>
     </div>
   </div>
@@ -926,10 +923,6 @@ with st.sidebar:
         <img src="{_logo_src()}" style="height:38px;width:auto;margin-bottom:10px;display:block;" alt="J&J">
         <div class="sidebar-brand-name">Code Automation</div>
         <div class="sidebar-brand-sub">Protocol Intelligence Platform</div>
-        <div class="sidebar-built-by">
-            <span class="sidebar-built-label">Powered by</span>
-            <img src="{_MUSIGMA_LOGO_URL}" style="height:20px;width:auto;border-radius:3px;" alt="Mu Sigma">
-        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -963,6 +956,66 @@ with st.sidebar:
         st.markdown('<div class="sidebar-section-label">Last Output</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="sidebar-output">{st.session_state.notebook_path}</div>',
                     unsafe_allow_html=True)
+
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-label">Databricks Connection</div>', unsafe_allow_html=True)
+    if is_databricks_app():
+        st.markdown(
+            '<div class="sidebar-output" style="color:#328714;">Connected via Databricks App</div>',
+            unsafe_allow_html=True,
+        )
+        # Token resolved automatically from env — keep session_state non-empty so buttons stay enabled
+        if not st.session_state.dbx_token:
+            st.session_state.dbx_token = "__dbx_app__"
+    else:
+        dbx_token_input = st.text_input(
+            "Personal Access Token",
+            value=st.session_state.dbx_token if st.session_state.dbx_token != "__dbx_app__" else "",
+            type="password",
+            placeholder="dapi…",
+            key="dbx_token_field",
+            label_visibility="collapsed",
+        )
+        if dbx_token_input != st.session_state.dbx_token:
+            st.session_state.dbx_token = dbx_token_input
+            st.session_state.dbx_notebook_url = None
+
+    if st.session_state.dbx_notebook_url:
+        st.markdown(
+            f'<div class="sidebar-output" style="margin-top:0.5rem;">'
+            f'<a href="{st.session_state.dbx_notebook_url}" target="_blank" '
+            f'style="color:{JNJ_GREEN_03};word-break:break-all;">Open in Databricks</a>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── One-time: push PHD Data Dictionary Delta table DDL ────────────────────
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-label">One-Time Setup</div>', unsafe_allow_html=True)
+
+    _SCRATCH_CATALOG = "rhealth_datasets_scratch_space"
+    _SCRATCH_SCHEMA  = "scratch_dbx_prphd_ads_automation_poc"
+
+    ddl_btn = st.button(
+        "Setup PHD Data Dictionary Table",
+        use_container_width=True,
+        disabled=not st.session_state.dbx_token,
+        help="Creates premier_phd_data_dictionary_v2_2 Delta table in the scratch schema. Run once.",
+    )
+    if ddl_btn and st.session_state.dbx_token:
+        ddl_notebook_sql = generate_delta_ddl_notebook(_SCRATCH_CATALOG, _SCRATCH_SCHEMA)
+        ddl_nb_path = f"/Users/admin/ads_automation/setup_phd_data_dictionary"
+        try:
+            save_notebook(_DBX_HOST, st.session_state.dbx_token, ddl_nb_path, ddl_notebook_sql)
+            ddl_url = get_notebook_url(_DBX_HOST, ddl_nb_path)
+            st.success("DDL notebook pushed.")
+            st.markdown(
+                f'<a href="{ddl_url}" target="_blank" style="font-size:0.78rem;">'
+                f'Open setup notebook →</a>',
+                unsafe_allow_html=True,
+            )
+        except Exception as e:
+            st.error(f"Push failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1103,18 +1156,28 @@ if st.session_state.steps_df is None:
     </div>
     """, unsafe_allow_html=True)
 
-# Step 3 placeholder — always visible
+# Step 3 + Step 4 placeholders — shown before protocol is loaded
 if st.session_state.steps_df is None:
     st.markdown(f"""
     <div class="jnj-section-header" style="margin-top:2.5rem;">
         <div class="jnj-step-num">3</div>
-        <div class="jnj-section-title">Generate Notebook
-            <span>Exports your curated steps as a structured .ipynb file</span>
+        <div class="jnj-section-title">Code Lists
+            <span>Define ICD-9/10, CPT, HCPCS, DRG codes grouped by condition — feeds SQL generation</span>
         </div>
     </div>
     <div style="background:#ffffff;border:1px dashed {JNJ_GRAY_03};border-radius:8px;
                 padding:1.5rem 2rem;color:{JNJ_GRAY_05};font-size:0.875rem;text-align:center;">
-        Complete Steps 1 and 2 to generate a notebook.
+        Upload a protocol in Step 1 to begin adding code lists.
+    </div>
+    <div class="jnj-section-header" style="margin-top:2.5rem;">
+        <div class="jnj-step-num">4</div>
+        <div class="jnj-section-title">Generate Notebook
+            <span>Generates a Databricks SQL notebook and pushes it to your workspace</span>
+        </div>
+    </div>
+    <div style="background:#ffffff;border:1px dashed {JNJ_GRAY_03};border-radius:8px;
+                padding:1.5rem 2rem;color:{JNJ_GRAY_05};font-size:0.875rem;text-align:center;">
+        Complete Steps 1, 2, and 3 to generate a notebook.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1196,93 +1259,13 @@ if st.session_state.steps_df is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── STEP 3: GENERATE ──────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div class="jnj-section-header" style="margin-top:2.5rem;">
-        <div class="jnj-step-num">3</div>
-        <div class="jnj-section-title">Generate Notebook
-            <span>Exports your curated steps as a structured .ipynb file</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    col_path, col_btn = st.columns([3, 1])
-    with col_path:
-        output_dir_input = st.text_input("Output directory", value="notebooks")
-    with col_btn:
-        st.markdown("<div style='margin-top:1.9rem;'></div>", unsafe_allow_html=True)
-        generate = st.button("Generate Notebook", type="primary", use_container_width=True)
-
-    if generate:
-        clean_df = (
-            edited_df
-            .dropna(subset=["description"])
-            .pipe(lambda d: d[d["description"].str.strip() != ""])
-            .reset_index(drop=True)
-        )
-
-        if clean_df.empty:
-            st.warning("No valid steps to export. Add at least one step.")
-        else:
-            display_steps = [
-                f"({row['step_type'].capitalize()}) {row['description'].strip()}"
-                for _, row in clean_df.iterrows()
-            ]
-
-            safe_title = (
-                "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
-            ) or "study"
-
-            output_dir = Path(output_dir_input)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / f"{safe_title[:80]}_attrition.ipynb"
-
-            try:
-                create_notebook(output_path, st.session_state.title, display_steps)
-                st.session_state.steps_df     = clean_df
-                st.session_state.notebook_path = str(output_path)
-
-                st.markdown(f"""
-                <div class="jnj-success">
-                    Notebook written to <code>{output_path}</code>
-                    &nbsp;·&nbsp; {len(display_steps)} steps exported
-                </div>
-                """, unsafe_allow_html=True)
-
-                rows_html = ""
-                for i, (_, row) in enumerate(clean_df.iterrows(), 1):
-                    t    = row["step_type"]
-                    css  = "inc" if t == "inclusion" else "exc"
-                    lbl  = "INC" if t == "inclusion" else "EXC"
-                    desc = str(row["description"]).strip()
-                    rows_html += f"""
-                    <div class="jnj-step-row">
-                        <span class="jnj-step-index">{i:02d}</span>
-                        <span class="jnj-badge jnj-badge-{css}">{lbl}</span>
-                        <span class="jnj-step-text">{desc}</span>
-                    </div>"""
-
-                st.markdown(f"""
-                <div class="jnj-card" style="padding:0;overflow:hidden;margin-top:0.5rem;">
-                    <div style="padding:clamp(0.75rem,2vw,1rem) clamp(1rem,2.5vw,1.4rem);
-                                border-bottom:1px solid {JNJ_GRAY_02};
-                                font-size:0.68rem;font-weight:800;letter-spacing:0.14em;
-                                text-transform:uppercase;color:{JNJ_GRAY_05};">
-                        Step Preview &nbsp;·&nbsp; {len(display_steps)} steps
-                    </div>
-                    {rows_html}
-                </div>
-                """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.markdown(f'<div class="jnj-error">Generation failed: {e}</div>',
-                            unsafe_allow_html=True)
 
 
-# ── STEP 4: CODE LISTS ───────────────────────────────────────────────────────
-st.markdown("""
+# ── STEP 3: CODE LISTS ───────────────────────────────────────────────────────
+if st.session_state.steps_df is not None:
+    st.markdown("""
 <div class="jnj-section-header" style="margin-top:2.5rem;">
-    <div class="jnj-step-num">4</div>
+    <div class="jnj-step-num">3</div>
     <div class="jnj-section-title">Code Lists
         <span>Define ICD-9/10, CPT, HCPCS, DRG and NDC codes grouped by condition — feeds SQL generation</span>
     </div>
@@ -1527,6 +1510,131 @@ if st.session_state.codelists_df is not None and not st.session_state.codelists_
         st.session_state.codelists_df = None
         st.rerun()
 
+# ── STEP 4: GENERATE & PUSH TO DATABRICKS ────────────────────────────────────
+if st.session_state.steps_df is not None:
+
+    st.markdown(f"""
+    <div class="jnj-section-header" style="margin-top:2.5rem;">
+        <div class="jnj-step-num">4</div>
+        <div class="jnj-section-title">Generate Notebook
+            <span>Generates a Databricks SQL notebook and pushes it to your workspace</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_gen, col_dl = st.columns([2, 1])
+    with col_gen:
+        push_btn = st.button(
+            "Generate & Push to Databricks",
+            type="primary",
+            use_container_width=True,
+            disabled=not st.session_state.dbx_token,
+        )
+    with col_dl:
+        if st.session_state.dbx_notebook_sql:
+            safe_title = (
+                "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
+            ) or "study"
+            st.download_button(
+                "Download SQL",
+                data=st.session_state.dbx_notebook_sql,
+                file_name=f"{safe_title[:60]}_attrition.sql",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+    if not st.session_state.dbx_token:
+        st.markdown(
+            f'<div style="font-size:0.78rem;color:{JNJ_GRAY_05};margin-top:0.5rem;">'
+            f'Enter your Databricks Personal Access Token in the sidebar to enable push.</div>',
+            unsafe_allow_html=True,
+        )
+
+    if push_btn:
+        clean_df = (
+            edited_df
+            .dropna(subset=["description"])
+            .pipe(lambda d: d[d["description"].str.strip() != ""])
+            .reset_index(drop=True)
+        )
+
+        if clean_df.empty:
+            st.warning("No valid steps found. Add at least one attrition step.")
+        else:
+            with st.spinner("Generating notebook…"):
+                try:
+                    notebook_sql = generate_databricks_notebook(
+                        title=st.session_state.title,
+                        steps_df=clean_df,
+                        codelists_df=st.session_state.codelists_df,
+                    )
+                    st.session_state.dbx_notebook_sql = notebook_sql
+                    st.session_state.steps_df = clean_df
+                except Exception as e:
+                    st.markdown(f'<div class="jnj-error">Notebook generation failed: {e}</div>',
+                                unsafe_allow_html=True)
+                    notebook_sql = None
+
+            if notebook_sql:
+                with st.spinner("Pushing to Databricks…"):
+                    try:
+                        user_email = get_current_user(_DBX_HOST, st.session_state.dbx_token)
+                    except Exception:
+                        user_email = "unknown"
+
+                    safe_title = (
+                        "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
+                    ) or "study"
+                    nb_path = f"/Users/{user_email}/ads_automation/{safe_title[:60]}_attrition"
+
+                    try:
+                        save_notebook(_DBX_HOST, st.session_state.dbx_token, nb_path, notebook_sql)
+                        nb_url = get_notebook_url(_DBX_HOST, nb_path)
+                        st.session_state.dbx_notebook_url = nb_url
+                        st.session_state.notebook_path = nb_path
+
+                        step_count = len(clean_df)
+                        cl_count   = len(st.session_state.codelists_df) if st.session_state.codelists_df is not None else 0
+
+                        st.markdown(f"""
+                        <div class="jnj-success">
+                            Notebook pushed to Databricks &nbsp;·&nbsp;
+                            {step_count} steps &nbsp;·&nbsp; {cl_count} codes<br>
+                            <a href="{nb_url}" target="_blank"
+                               style="color:#1e5c0a;font-weight:700;">{nb_path}</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    except Exception as e:
+                        st.markdown(f'<div class="jnj-error">Push failed: {e}</div>',
+                                    unsafe_allow_html=True)
+
+                rows_html = ""
+                for i, (_, row) in enumerate(clean_df.iterrows(), 1):
+                    t   = row["step_type"]
+                    css = "inc" if t == "inclusion" else "exc"
+                    lbl = "INC" if t == "inclusion" else "EXC"
+                    desc = str(row["description"]).strip()
+                    rows_html += (
+                        f'<div class="jnj-step-row">'
+                        f'<span class="jnj-step-index">{i:02d}</span>'
+                        f'<span class="jnj-badge jnj-badge-{css}">{lbl}</span>'
+                        f'<span class="jnj-step-text">{desc}</span>'
+                        f'</div>'
+                    )
+
+                st.markdown(f"""
+                <div class="jnj-card" style="padding:0;overflow:hidden;margin-top:1rem;">
+                    <div style="padding:clamp(0.75rem,2vw,1rem) clamp(1rem,2.5vw,1.4rem);
+                                border-bottom:1px solid {JNJ_GRAY_02};
+                                font-size:0.68rem;font-weight:800;letter-spacing:0.14em;
+                                text-transform:uppercase;color:{JNJ_GRAY_05};">
+                        Step Preview &nbsp;·&nbsp; {len(clean_df)} steps
+                    </div>
+                    {rows_html}
+                </div>
+                """, unsafe_allow_html=True)
+
 st.markdown('</div>', unsafe_allow_html=True)   # close jnj-content / jnj-inner
 
 
@@ -1541,10 +1649,6 @@ st.markdown(f"""
         Agentic AI Platform &nbsp;·&nbsp; Internal Use Only
     </div>
     <div class="jnj-footer-right">
-        <span style="margin-right:0.5rem;font-weight:700;font-size:0.68rem;letter-spacing:0.05em;text-transform:uppercase;color:{JNJ_GRAY_08};">Powered by</span>
-        <img src="{_MUSIGMA_LOGO_URL}"
-             style="height:18px;width:auto;border-radius:3px;vertical-align:middle;margin-right:0.75rem;"
-             alt="Mu Sigma">
         <span>Code Automation v1.0.0</span>
     </div>
   </div>
