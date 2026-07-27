@@ -1375,90 +1375,74 @@ with cl_tab_excel:
             all_sheets = {}
 
         if all_sheets:
-            selected_sheet = st.selectbox(
-                f"Sheet to process ({len(all_sheets)} sheet(s) in this file)",
-                list(all_sheets.keys()),
-                key="cl_sheet_select",
+            st.markdown(
+                f'<div style="font-size:0.78rem;color:{JNJ_GRAY_05};margin-bottom:0.75rem;">'
+                f'Found <strong>{len(all_sheets)}</strong> sheet(s) — configure and import each below.</div>',
+                unsafe_allow_html=True,
             )
-            df_sheet = all_sheets[selected_sheet].dropna(how="all")
 
-            st.markdown(f"""
-            <div style="font-size:0.68rem;font-weight:700;letter-spacing:0.12em;
-                        text-transform:uppercase;color:{JNJ_GRAY_05};margin:1rem 0 0.4rem;">
-                Preview — first 5 rows
-            </div>
-            """, unsafe_allow_html=True)
-            st.dataframe(df_sheet.head(5), use_container_width=True)
+            for sheet_name, df_raw in all_sheets.items():
+                df_sheet     = df_raw.dropna(how="all")
+                col_options  = ["— not in this sheet —"] + list(df_sheet.columns.astype(str))
+                sample_codes = df_sheet.iloc[:, 0].dropna().astype(str).tolist()[:20]
+                guessed_sys  = guess_coding_system(sheet_name, sample_codes)
+                guessed_idx  = CODING_SYSTEMS.index(guessed_sys) if guessed_sys in CODING_SYSTEMS else 0
 
-            col_options  = ["— not in this sheet —"] + list(df_sheet.columns.astype(str))
-            sample_codes = df_sheet.iloc[:, 0].dropna().astype(str).tolist()[:20]
-            guessed_sys  = guess_coding_system(selected_sheet, sample_codes)
-            guessed_idx  = CODING_SYSTEMS.index(guessed_sys) if guessed_sys in CODING_SYSTEMS else 0
+                label = f"Sheet: {sheet_name}  ·  {len(df_sheet)} rows"
+                if guessed_sys:
+                    label += f"  ·  Auto-detected: {guessed_sys}"
 
-            st.markdown(f"""
-            <div style="font-size:0.68rem;font-weight:700;letter-spacing:0.12em;
-                        text-transform:uppercase;color:{JNJ_GRAY_05};margin:1rem 0 0.4rem;">
-                Map columns
-            </div>
-            """, unsafe_allow_html=True)
+                with st.expander(label, expanded=True):
+                    st.dataframe(df_sheet.head(3), use_container_width=True)
 
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                map_code_col = st.selectbox("Code column *", col_options, key=f"map_code_{selected_sheet}")
-                map_desc_col = st.selectbox("Description column (optional)", col_options, key=f"map_desc_{selected_sheet}")
-            with mc2:
-                map_cond_col    = st.selectbox("Condition column (if in file)", col_options, key=f"map_cond_col_{selected_sheet}")
-                map_cond_manual = st.text_input("— or type condition name", placeholder="e.g. Malnutrition", key=f"map_cond_txt_{selected_sheet}")
-                map_sys_col     = st.selectbox("Coding system column (if in file)", col_options, key=f"map_sys_col_{selected_sheet}")
-                map_sys_manual  = st.selectbox(
-                    "— or select coding system",
-                    CODING_SYSTEMS,
-                    index=guessed_idx,
-                    key=f"map_sys_sel_{selected_sheet}",
-                )
-
-            if guessed_sys:
-                st.markdown(f"""
-                <div class="jnj-hint" style="color:{JNJ_BLUE_03};border-color:rgba(15,104,178,0.3);margin-bottom:0.75rem;">
-                    Auto-detected: <strong>{guessed_sys}</strong> from sheet name &quot;{selected_sheet}&quot;
-                </div>
-                """, unsafe_allow_html=True)
-
-            if st.button("Import This Sheet", type="primary", key=f"cl_import_{selected_sheet}"):
-                if map_code_col == "— not in this sheet —":
-                    st.warning("Select the column that contains the codes.")
-                else:
-                    cond_vals = (
-                        df_sheet[map_cond_col].fillna("Unknown").astype(str).str.strip()
-                        if map_cond_col != "— not in this sheet —"
-                        else pd.Series([map_cond_manual.strip() or "Unknown"] * len(df_sheet))
-                    )
-                    sys_vals = (
-                        df_sheet[map_sys_col].fillna("").astype(str).str.strip()
-                        if map_sys_col != "— not in this sheet —"
-                        else pd.Series([map_sys_manual] * len(df_sheet))
-                    )
-                    desc_vals = (
-                        df_sheet[map_desc_col].astype(str).str.strip()
-                        if map_desc_col != "— not in this sheet —"
-                        else pd.Series([""] * len(df_sheet))
-                    )
-                    raw_codes = df_sheet[map_code_col].dropna().astype(str).str.strip().str.upper()
-                    new_rows = pd.DataFrame({
-                        "condition":     cond_vals.values[:len(raw_codes)],
-                        "coding_system": sys_vals.values[:len(raw_codes)],
-                        "code":          raw_codes.values,
-                        "description":   desc_vals.values[:len(raw_codes)],
-                    })
-                    new_rows = new_rows[new_rows["code"].str.len() > 0].reset_index(drop=True)
-                    if st.session_state.codelists_df is None:
-                        st.session_state.codelists_df = new_rows
-                    else:
-                        st.session_state.codelists_df = pd.concat(
-                            [st.session_state.codelists_df, new_rows], ignore_index=True
+                    mc1, mc2 = st.columns(2)
+                    with mc1:
+                        map_code_col = st.selectbox(
+                            "Code column *", col_options, key=f"map_code_{sheet_name}")
+                        map_desc_col = st.selectbox(
+                            "Description column (optional)", col_options, key=f"map_desc_{sheet_name}")
+                    with mc2:
+                        map_cond_col    = st.selectbox(
+                            "Condition column (if in file)", col_options, key=f"map_cond_col_{sheet_name}")
+                        map_cond_manual = st.text_input(
+                            "— or type condition name", placeholder="e.g. TKA", key=f"map_cond_txt_{sheet_name}")
+                        map_sys_manual  = st.selectbox(
+                            "Coding system",
+                            CODING_SYSTEMS,
+                            index=guessed_idx,
+                            key=f"map_sys_sel_{sheet_name}",
                         )
-                    st.success(f"{len(new_rows)} codes imported from '{selected_sheet}'.")
-                    st.rerun()
+
+                    if st.button(f"Import — {sheet_name}", type="primary", key=f"cl_import_{sheet_name}"):
+                        if map_code_col == "— not in this sheet —":
+                            st.warning("Select the column that contains the codes.")
+                        else:
+                            cond_vals = (
+                                df_sheet[map_cond_col].fillna("Unknown").astype(str).str.strip()
+                                if map_cond_col != "— not in this sheet —"
+                                else pd.Series([map_cond_manual.strip() or sheet_name] * len(df_sheet))
+                            )
+                            desc_vals = (
+                                df_sheet[map_desc_col].astype(str).str.strip()
+                                if map_desc_col != "— not in this sheet —"
+                                else pd.Series([""] * len(df_sheet))
+                            )
+                            raw_codes = df_sheet[map_code_col].dropna().astype(str).str.strip().str.upper()
+                            new_rows = pd.DataFrame({
+                                "condition":     cond_vals.values[:len(raw_codes)],
+                                "coding_system": pd.Series([map_sys_manual] * len(raw_codes)),
+                                "code":          raw_codes.values,
+                                "description":   desc_vals.values[:len(raw_codes)],
+                            })
+                            new_rows = new_rows[new_rows["code"].str.len() > 0].reset_index(drop=True)
+                            if st.session_state.codelists_df is None:
+                                st.session_state.codelists_df = new_rows
+                            else:
+                                st.session_state.codelists_df = pd.concat(
+                                    [st.session_state.codelists_df, new_rows], ignore_index=True
+                                )
+                            st.success(f"{len(new_rows)} codes imported from '{sheet_name}' as {map_sys_manual}.")
+                            st.rerun()
 
 # ── DISPLAY EXISTING CODE LISTS ───────────────────────────────────────────────
 if st.session_state.codelists_df is not None and not st.session_state.codelists_df.empty:
