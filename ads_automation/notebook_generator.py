@@ -251,38 +251,25 @@ def generate_databricks_notebook(
         prev_table = tbl
 
     # ── Attrition waterfall ───────────────────────────────────────────────────
+    # Always Python-generated: LLM cannot reliably produce this template and
+    # tends to hallucinate a new Step 1 SQL instead.
     if step_records:
         cells.append(_md_cell(
             "%md\n---\n"
             "## Attrition Waterfall\n"
             "Encounters and patients retained at each step, with drop counts."
         ))
-        if use_llm:
-            wf_sql = _llm_waterfall(step_records, token)
-            # Safety net: if LLM returned an error comment or invalid SQL, use reliable fallback
-            s = wf_sql.upper()
-            if not wf_sql.rstrip().endswith(";") or "TODO" in wf_sql[:60] or "LAG(" not in s:
-                wf_sql = _fallback_waterfall(step_records)
-            cells.append(wf_sql)
-        else:
-            cells.append(_fallback_waterfall(step_records))
+        cells.append(_fallback_waterfall(step_records))
 
     # ── Final cohort summary ──────────────────────────────────────────────────
+    # Always Python-generated: fixed 14-column template, no LLM needed.
     if prev_table:
         cells.append(_md_cell(
             "%md\n---\n"
             "## Final Cohort Summary\n"
             "Demographics, utilization, and cost by surgery category."
         ))
-        if use_llm:
-            final_sql = _llm_final(prev_table, token)
-            # Safety net: if LLM returned an error comment or invalid SQL, use reliable fallback
-            sf = final_sql.upper()
-            if not final_sql.rstrip().endswith(";") or "TODO" in final_sql[:60] or "SURGERY_CATEGORY" not in sf:
-                final_sql = _fallback_final(prev_table)
-            cells.append(final_sql)
-        else:
-            cells.append(_fallback_final(prev_table))
+        cells.append(_fallback_final(prev_table))
 
     return NOTEBOOK_HEADER + "\n" + CELL_SEP.join(cells)
 
@@ -294,39 +281,57 @@ def generate_databricks_notebook(
 def _fallback_waterfall(step_records):
     rows = []
     for n, stype, desc, tbl in step_records:
-        label     = stype.upper()[:3]
-        safe_desc = _escape(desc[:80])
+        label     = "INC" if str(stype).lower() == "inclusion" else "EXC"
+        safe_desc = _escape(str(desc)[:80])
         rows.append(
-            f"    SELECT {n} AS n, '{label}' AS type, '{safe_desc}' AS step,\n"
+            f"    SELECT {n} AS n, '{label}' AS type,\n"
+            f"           '{n}. {safe_desc}' AS step,\n"
             f"           COUNT(*) AS enc, COUNT(DISTINCT medrec_key) AS pts\n"
             f"    FROM {tbl}"
         )
-    union_all = "\n    UNION ALL\n".join(rows)
+    union_all = "\n\n    UNION ALL\n".join(rows)
     return (
-        f"WITH counts AS (\n{union_all}\n)\n\n"
-        f"SELECT n AS step_num, type AS step_type, step AS step_description,\n"
-        f"    enc AS enc_after, pts AS pts_after,\n"
-        f"    LAG(enc) OVER (ORDER BY n) - enc AS enc_dropped,\n"
-        f"    LAG(pts) OVER (ORDER BY n) - pts AS pts_dropped\n"
-        f"FROM counts ORDER BY n;"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n"
+        f"-- ATTRITION WATERFALL\n"
+        f"-- enc_dropped / pts_dropped = difference vs previous step\n"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n\n"
+        f"WITH counts AS (\n\n"
+        f"{union_all}\n\n"
+        f")\n\n"
+        f"SELECT\n"
+        f"    n                                        AS step_num,\n"
+        f"    type                                     AS step_type,\n"
+        f"    step                                     AS step_description,\n"
+        f"    enc                                      AS enc_after,\n"
+        f"    pts                                      AS pts_after,\n"
+        f"    LAG(enc) OVER (ORDER BY n) - enc         AS enc_dropped,\n"
+        f"    LAG(pts) OVER (ORDER BY n) - pts         AS pts_dropped\n"
+        f"FROM counts\n"
+        f"ORDER BY n;"
     )
 
 
 def _fallback_final(last_table):
     return (
-        f"SELECT surgery_category,\n"
-        f"    COUNT(*) AS index_admissions, COUNT(DISTINCT medrec_key) AS unique_patients,\n"
-        f"    COUNT(DISTINCT prov_id) AS hospitals,\n"
-        f"    ROUND(AVG(age), 1) AS mean_age,\n"
-        f"    SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female_n,\n"
-        f"    SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male_n,\n"
-        f"    SUM(CASE WHEN i_o_ind = 'I' THEN 1 ELSE 0 END) AS inpatient_n,\n"
-        f"    SUM(CASE WHEN i_o_ind = 'O' THEN 1 ELSE 0 END) AS outpatient_n,\n"
-        f"    ROUND(AVG(los), 1) AS mean_los_days,\n"
-        f"    ROUND(AVG(pat_cost), 0) AS mean_total_cost_usd,\n"
-        f"    ROUND(AVG(pat_fix_cost), 0) AS mean_room_board_cost_usd,\n"
-        f"    ROUND(AVG(pat_var_cost), 0) AS mean_variable_cost_usd,\n"
-        f"    ROUND(AVG(pat_charges), 0) AS mean_billed_charges_usd\n"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n"
+        f"-- FINAL COHORT SUMMARY — demographics, utilization, cost by surgery category\n"
+        f"-- ════════════════════════════════════════════════════════════════════════════\n\n"
+        f"SELECT\n"
+        f"    surgery_category,\n"
+        f"    COUNT(*)                                             AS index_admissions,\n"
+        f"    COUNT(DISTINCT medrec_key)                           AS unique_patients,\n"
+        f"    COUNT(DISTINCT prov_id)                              AS hospitals,\n"
+        f"    ROUND(AVG(age),          1)                          AS mean_age,\n"
+        f"    SUM(CASE WHEN gender  = 'F' THEN 1 ELSE 0 END)       AS female_n,\n"
+        f"    SUM(CASE WHEN gender  = 'M' THEN 1 ELSE 0 END)       AS male_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'I' THEN 1 ELSE 0 END)       AS inpatient_n,\n"
+        f"    SUM(CASE WHEN i_o_ind = 'O' THEN 1 ELSE 0 END)       AS outpatient_n,\n"
+        f"    ROUND(AVG(los),          1)                          AS mean_los_days,\n"
+        f"    ROUND(AVG(pat_cost),     0)                          AS mean_total_cost_usd,\n"
+        f"    ROUND(AVG(pat_fix_cost), 0)                          AS mean_room_board_cost_usd,\n"
+        f"    ROUND(AVG(pat_var_cost), 0)                          AS mean_variable_cost_usd,\n"
+        f"    ROUND(AVG(pat_charges),  0)                          AS mean_billed_charges_usd\n"
         f"FROM {last_table}\n"
-        f"GROUP BY surgery_category ORDER BY surgery_category;"
+        f"GROUP BY surgery_category\n"
+        f"ORDER BY surgery_category;"
     )
