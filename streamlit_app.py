@@ -1554,7 +1554,7 @@ if st.session_state.steps_df is not None:
     ) or "study"
     nb_path_input = st.text_input(
         "Databricks workspace path",
-        value=st.session_state.get("nb_path_override") or f"/Shared/ads_automation/{safe_title_default[:60]}_attrition",
+        value=st.session_state.get("nb_path_override") or f"/Users/dr20@its.jnj.com/ads_automation/{safe_title_default[:60]}_attrition",
         help="Full workspace path where the notebook will be saved. Must start with /Users/<email>/ or /Shared/.",
         key="nb_path_input",
     )
@@ -1613,7 +1613,7 @@ if st.session_state.steps_df is not None:
 
             if notebook_sql:
                 nb_path = (st.session_state.get("nb_path_override") or "").strip() or \
-                          f"/Shared/ads_automation/{safe_title_default[:60]}_attrition"
+                          f"/Users/dr20@its.jnj.com/ads_automation/{safe_title_default[:60]}_attrition"
 
                 with st.spinner(f"Pushing to {nb_path}…"):
                     try:
