@@ -883,6 +883,7 @@ for key, default in [
     ("codelists_df",        None),
     ("selected_conditions", None),   # None = all; list = user-chosen subset
     ("dbx_token",           ""),
+    ("dbx_user",            ""),     # auto-detected from PAT via SCIM API
     ("dbx_notebook_url",    None),
     ("dbx_notebook_sql",    None),
 ]:
@@ -980,6 +981,14 @@ with st.sidebar:
         if dbx_token_input != st.session_state.dbx_token:
             st.session_state.dbx_token = dbx_token_input
             st.session_state.dbx_notebook_url = None
+            st.session_state.nb_path_override = None   # reset path so it rebuilds for the new user
+            # Auto-detect username from PAT
+            if dbx_token_input:
+                try:
+                    from ads_automation.databricks_api import get_current_user
+                    st.session_state.dbx_user = get_current_user(_DBX_HOST, dbx_token_input)
+                except Exception:
+                    st.session_state.dbx_user = ""
 
     if st.session_state.dbx_notebook_url:
         st.markdown(
@@ -1604,9 +1613,10 @@ if st.session_state.steps_df is not None:
     safe_title_default = (
         "".join(ch if ch.isalnum() else "_" for ch in st.session_state.title).strip("_")
     ) or "study"
+    _user_email = st.session_state.dbx_user or "dr20@its.jnj.com"
     nb_path_input = st.text_input(
         "Databricks workspace path",
-        value=st.session_state.get("nb_path_override") or f"/Users/dr20@its.jnj.com/ads_automation/{safe_title_default[:60]}_attrition",
+        value=st.session_state.get("nb_path_override") or f"/Users/{_user_email}/ads_automation/{safe_title_default[:60]}_attrition",
         help="Full workspace path where the notebook will be saved. Must start with /Users/<email>/ or /Shared/.",
         key="nb_path_input",
     )
