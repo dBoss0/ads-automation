@@ -1,4 +1,3 @@
-bundle_version: "1"
 bundle:
   name: jnj-medtech-code-automation
 
@@ -11,3 +10,15 @@ resources:
       name: "jnj-medtech-code-automation"
       description: "J&J MedTech — Attrition Cohort Code Automation"
       source_code_path: .
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-db3d8a4e-f2cf.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-db3d8a4e-f2cf.cloud.databricks.com

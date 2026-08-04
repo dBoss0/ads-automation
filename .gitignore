@@ -37,6 +37,9 @@ Thumbs.db
 # Streamlit cache
 .streamlit/
 
+# Credentials / test scripts with tokens
+test_endpoint.py
+
 # Temp
 *.tmp
 *.log
