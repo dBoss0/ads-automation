@@ -1,7 +1,10 @@
 import re
 from pathlib import Path
 
-from docx import Document
+try:
+    from docx import Document
+except ImportError:
+    from ads_automation._docx_reader import Document
 
 
 DATA_SOURCE_MASTER = {
