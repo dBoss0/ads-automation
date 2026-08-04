@@ -1,7 +1,7 @@
 command:
   - streamlit
   - run
-  - streamlit_app.py
+  - app_test.py
   - --server.port
   - "8080"
   - --server.address
