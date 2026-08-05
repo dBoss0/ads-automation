@@ -1,4 +1,4 @@
-# Python
+# ── Python ────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -9,37 +9,40 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
+# ── Virtual environments ──────────────────────────────────
 .venv*/
 venv/
 env/
 ENV/
 
-# Notebooks output (generated, not source)
+# ── Generated notebooks (output, not source) ─────────────
 notebooks/
 *.ipynb
 
-# Uploaded/test documents
+# ── Test / uploaded documents ────────────────────────────
 *.docx
 *.pdf
 
-# Local logo (app falls back to web URL on VDI)
+# ── Images (logo falls back to web URL on server) ────────
 *.png
 *.jpg
 *.jpeg
 
-# OS / IDE
+# ── OS / IDE ──────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# Streamlit cache
+# ── Streamlit cache ───────────────────────────────────────
 .streamlit/
 
-# Credentials / test scripts with tokens
+# ── Credentials — NEVER commit ───────────────────────────
 test_endpoint.py
+*.token
+.env
+secrets.toml
 
-# Temp
+# ── Temp / logs ───────────────────────────────────────────
 *.tmp
 *.log
